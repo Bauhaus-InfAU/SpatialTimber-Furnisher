@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@engine": ["../furnisher-engine/src/engine/index"],
+      "@engine/*": ["../furnisher-engine/src/engine/*"],
+      "@layout": ["../furnisher-engine/src/layout/index"],
+      "@layout/*": ["../furnisher-engine/src/layout/*"],
+      "@library": ["../furnisher-engine/src/library/index"],
+      "@library/*": ["../furnisher-engine/src/library/*"]
+    }
+  },
+  "include": [
+    "src",
+    "../furnisher-engine/src/engine",
+    "../furnisher-engine/src/layout",
+    "../furnisher-engine/src/library"
+  ]
+}

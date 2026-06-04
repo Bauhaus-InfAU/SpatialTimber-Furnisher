@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+
+# Custom library overrides — stay local, never committed
+furnisher-engine/src/library/custom/*
+!furnisher-engine/src/library/custom/.gitkeep
+!furnisher-engine/src/library/custom/README.md
+
+# Build output
+dist
+dist-ssr
+
+# Storybook
+storybook-static
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+debug-*.log
+
+# Environment
+*.local
+.env
+.env.*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.claude
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
