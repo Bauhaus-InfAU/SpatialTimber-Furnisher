@@ -212,17 +212,17 @@ function FurniturePreviewSvg({ variant }: { variant: FurnitureVariant }) {
   return (
     <svg className="furniture-preview-svg" viewBox={`${minX} ${minY} ${vbW} ${vbH}`}
       preserveAspectRatio="xMidYMid meet" style={{ height: `${pixelH}px` }}>
-      <polygon points={polyPts(variant.bboxBig.points)} fill="none" stroke="#aaa" strokeWidth={sw} strokeDasharray={`${dashL} ${dashG}`} />
-      <polygon points={polyPts(variant.bboxSmall.points)} fill="rgba(80,100,160,0.08)" stroke="#888" strokeWidth={sw} />
+      <polygon points={polyPts(variant.bboxBig.points)} fill="none" stroke="#C2C0B6" strokeWidth={sw} strokeDasharray={`${dashL} ${dashG}`} />
+      <polygon points={polyPts(variant.bboxSmall.points)} fill="rgba(20,20,19,0.05)" stroke="#6f6c63" strokeWidth={sw} />
       {variant.geometry.map((geo, i) => (
-        <path key={i} d={pathD(geo.points, geo.closed)} fill={geo.closed ? "rgba(60,80,140,0.14)" : "none"} stroke="#3a4560" strokeWidth={sw * 0.85} />
+        <path key={i} d={pathD(geo.points, geo.closed)} fill={geo.closed ? "rgba(217,119,87,0.12)" : "none"} stroke="#2b2a28" strokeWidth={sw * 0.85} />
       ))}
       <line
         x1={(variant.linePlacement.points[0] as [number, number])[0]}
         y1={(variant.linePlacement.points[0] as [number, number])[1]}
         x2={(variant.linePlacement.points[variant.linePlacement.points.length - 1] as [number, number])[0]}
         y2={(variant.linePlacement.points[variant.linePlacement.points.length - 1] as [number, number])[1]}
-        stroke="#555" strokeWidth={sw * 1.5}
+        stroke="#D97757" strokeWidth={sw * 1.5}
       />
     </svg>
   );
@@ -241,11 +241,11 @@ function CustomPreviewSvg({ def }: { def: CustomFurnitureDef }) {
   return (
     <svg className="furniture-preview-svg" viewBox={`${-pad} ${-pad} ${vbW} ${vbH}`}
       preserveAspectRatio="xMidYMid meet" style={{ height: `${pixelH}px` }}>
-      <rect x={0} y={0} width={bigWidth} height={bigDepth} fill="none" stroke="#aaa" strokeWidth={sw} strokeDasharray={`${dashL} ${dashG}`} />
+      <rect x={0} y={0} width={bigWidth} height={bigDepth} fill="none" stroke="#C2C0B6" strokeWidth={sw} strokeDasharray={`${dashL} ${dashG}`} />
       {smallWidth > 0 && smallDepth > 0 && (
-        <rect x={smallOffsetX} y={smallOffsetY} width={smallWidth} height={smallDepth} fill="rgba(80,100,160,0.1)" stroke="#888" strokeWidth={sw} />
+        <rect x={smallOffsetX} y={smallOffsetY} width={smallWidth} height={smallDepth} fill="rgba(217,119,87,0.10)" stroke="#6f6c63" strokeWidth={sw} />
       )}
-      <line x1={0} y1={0} x2={bigWidth} y2={0} stroke="#555" strokeWidth={sw * 1.5} />
+      <line x1={0} y1={0} x2={bigWidth} y2={0} stroke="#D97757" strokeWidth={sw * 1.5} />
     </svg>
   );
 }
@@ -597,10 +597,8 @@ export function Sidebar({
   return (
     <aside className="sidebar" aria-label="Design pipeline">
       <div className="sidebar-header">
-        <div className="sidebar-brand-row">
-          <span className="sidebar-brand">Furnisher</span>
-        </div>
-        <div className="sidebar-subtitle">Check if your furniture fits.</div>
+        <div className="rail-eyebrow"><b>·</b> Pipeline</div>
+        <div className="sidebar-subtitle">Trace your plan, then check the furniture fits.</div>
       </div>
 
       <div className="pipeline-steps">
@@ -726,7 +724,10 @@ export function Sidebar({
           <div className="footer-sub">{footerSub}</div>
         </div>
         <button className="furnish-button" type="button" onClick={onFurnish}>
-          Furnish apartment ✨
+          <svg className="furnish-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M5 3v4M3 5h4M6 17v4M4 19h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
+          </svg>
+          Furnish apartment
         </button>
         {isFurnished && (
           <button

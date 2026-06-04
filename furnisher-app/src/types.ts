@@ -65,18 +65,22 @@ export type FurnishedRoomResult = {
   warnings: string[];
 };
 
+// Room-type data colours — a muted, earthy set harmonised with the
+// SpatialTimber warm palette (extends the system's peach/olive/sky data
+// colours). Kept deliberately desaturated so they never compete with the
+// single clay accent.
 export const ROOM_TOOLS: Array<{
   id: RoomToolId;
   label: string;
   chipLabel: string;
   color: string;
 }> = [
-  { id: "Bedroom", label: "Bed", chipLabel: "bedroom", color: "#4c78a8" },
-  { id: "Living room", label: "Liv", chipLabel: "living", color: "#59a14f" },
-  { id: "Kitchen", label: "Kit", chipLabel: "kitchen", color: "#f28e2b" },
-  { id: "Bathroom", label: "Bath", chipLabel: "bath", color: "#76b7b2" },
-  { id: "WC", label: "WC", chipLabel: "wc", color: "#af7aa1" },
-  { id: "Children", label: "Child", chipLabel: "children", color: "#edc948" },
+  { id: "Bedroom", label: "Bed", chipLabel: "bedroom", color: "#5E84A8" },
+  { id: "Living room", label: "Liv", chipLabel: "living", color: "#788C5D" },
+  { id: "Kitchen", label: "Kit", chipLabel: "kitchen", color: "#C2873F" },
+  { id: "Bathroom", label: "Bath", chipLabel: "bath", color: "#5F9B95" },
+  { id: "WC", label: "WC", chipLabel: "wc", color: "#9A7AA0" },
+  { id: "Children", label: "Child", chipLabel: "children", color: "#CBA13F" },
 ];
 
 export type CustomFurnitureDef = {

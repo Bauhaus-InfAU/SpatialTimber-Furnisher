@@ -5,6 +5,7 @@ import type { PlacedFurniture, StepOptions, PlacementOptions } from "@engine/typ
 import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
+import { AppHeader } from "./AppHeader";
 import { ROOM_TOOLS, isRoomTool } from "./types";
 import type {
   ToolId,
@@ -985,7 +986,7 @@ function RoomLayer({
               cx={draft.cursor.x}
               cy={draft.cursor.y}
               r="0.1"
-              stroke={draft.orthogonal ? "#1f6feb" : draft.color}
+              stroke={draft.orthogonal ? "#D97757" : draft.color}
             />
           ) : null}
         </g>
@@ -2080,7 +2081,9 @@ export default function App() {
   const computedAptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
 
   return (
-    <main className="app-shell">
+    <div className="app-root">
+      <AppHeader />
+      <main className="app-shell">
       <Sidebar
         rooms={rooms}
         furnishedRooms={furnishedRooms}
@@ -2179,6 +2182,7 @@ export default function App() {
           onChange={handleImageFileChange}
         />
       </section>
-    </main>
+      </main>
+    </div>
   );
 }
