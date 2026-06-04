@@ -584,11 +584,8 @@ export function Sidebar({
     ? `Type ${aptTypeLabel(aptType)}`
     : `Type ${aptTypeLabel(aptType)} (auto)`;
 
-  // Footer contextual text
-  const footerHeading = rooms.length === 0
-    ? "Start by tracing rooms"
-    : isFurnished ? "Apartment furnished" : "Ready to furnish";
-  const footerSub = rooms.length === 0
+  // Readiness note shown under the primary action
+  const furnishNote = rooms.length === 0
     ? "Upload a floor plan and draw your rooms."
     : isFurnished
     ? "Explore and adjust the placement."
@@ -599,6 +596,27 @@ export function Sidebar({
       <div className="sidebar-header">
         <div className="rail-eyebrow"><b>·</b> Pipeline</div>
         <div className="sidebar-subtitle">Trace your plan, then check the furniture fits.</div>
+      </div>
+
+      <div className="furnish-card">
+        <button className="furnish-button" type="button" onClick={onFurnish} disabled={rooms.length === 0}>
+          <svg className="furnish-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M5 3v4M3 5h4M6 17v4M4 19h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
+          </svg>
+          Furnish apartment
+        </button>
+        <div className="furnish-note">{furnishNote}</div>
+        {isFurnished && (
+          <div className="affords">
+            <button
+              type="button"
+              className={`afford${showTransitionAreas ? " active" : ""}`}
+              onClick={onToggleTransitionAreas}
+            >
+              Transition zones
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="pipeline-steps">
@@ -716,28 +734,6 @@ export function Sidebar({
           )}
         </PipelineStep>
         </div>
-      </div>
-
-      <div className="sidebar-footer">
-        <div className="footer-cta-text">
-          <div className="footer-heading">{footerHeading}</div>
-          <div className="footer-sub">{footerSub}</div>
-        </div>
-        <button className="furnish-button" type="button" onClick={onFurnish}>
-          <svg className="furnish-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M5 3v4M3 5h4M6 17v4M4 19h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
-          </svg>
-          Furnish apartment
-        </button>
-        {isFurnished && (
-          <button
-            className={`step-btn primary wide${showTransitionAreas ? " active" : ""}`}
-            type="button"
-            onClick={onToggleTransitionAreas}
-          >
-            Transition zones
-          </button>
-        )}
       </div>
     </aside>
   );

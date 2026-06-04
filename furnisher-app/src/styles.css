@@ -87,6 +87,8 @@ button {
   display: flex;
   flex: 1;
   min-height: 0;
+  gap: 16px;
+  padding: 14px 16px 16px;
   overflow: hidden;
 }
 
@@ -310,22 +312,24 @@ button {
 
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 
+/* the side panel — a column of chamfered cards floating on the oat ground,
+   with the rail-head eyebrow sitting on the bare ground above them */
 .sidebar {
   display: flex;
   flex-direction: column;
+  gap: 11px;
   width: 340px;
   flex-shrink: 0;
-  height: 100%;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-strong);
-  overflow: hidden;
+  min-height: 0;
+  overflow: visible;
 }
 
 .sidebar-header {
-  padding: 18px 20px 14px;
+  padding: 2px 8px 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
+  flex: none;
 }
 
 .rail-eyebrow {
@@ -348,21 +352,27 @@ button {
   letter-spacing: -0.003em;
 }
 
+/* the steps card — its own chamfered card with internal scroll */
 .pipeline-steps {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding: 6px 16px 16px;
+  padding: 4px 6px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-card);
+  box-shadow: var(--st-shadow-card);
 }
 
+/* steps flow directly inside the side-panel card — no nested card */
 .pipeline-steps-frame {
-  background: var(--bg-card);
-  border-radius: var(--st-r-lg);
-  border: 1px solid var(--border);
-  box-shadow: var(--st-shadow-card);
-  overflow: hidden;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
 }
 
 /* thin warm scrollbar */
@@ -697,30 +707,19 @@ button {
   font-weight: 600;
 }
 
-/* ─── Sidebar footer ───────────────────────────────────────────────────────── */
+/* ─── Furnish card (primary action, pinned at the top of the rail) ───────────── */
 
-.sidebar-footer {
-  padding: 14px 16px 18px;
-  border-top: 1px solid var(--border-strong);
-  display: grid;
-  gap: 10px;
-}
-
-.footer-cta-text {
-  display: grid;
-  gap: 2px;
-}
-
-.footer-heading {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
-}
-
-.footer-sub {
-  font-size: 12px;
-  color: var(--text-secondary);
+/* the furnish card — its own chamfered card, pinned above the steps card */
+.furnish-card {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 16px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-card);
+  box-shadow: var(--st-shadow-card);
 }
 
 /* the single clay call-to-action */
@@ -742,19 +741,67 @@ button {
   transition: filter 140ms, transform 140ms;
 }
 
-.furnish-button:hover {
+.furnish-button:hover:not(:disabled) {
   filter: brightness(1.05);
   transform: translateY(-1px);
 }
 
-.furnish-button:active {
+.furnish-button:active:not(:disabled) {
   transform: translateY(0);
+}
+
+.furnish-button:disabled {
+  background: #d8d2c6;
+  color: #9b988f;
+  cursor: not-allowed;
 }
 
 .furnish-ico {
   width: 16px;
   height: 16px;
   flex: none;
+}
+
+.furnish-note {
+  font-family: var(--st-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.affords {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.afford {
+  flex: 1;
+  text-align: center;
+  font-family: var(--st-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-pill);
+  padding: 8px 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.afford:hover {
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.afford.active {
+  color: var(--st-oat);
+  background: var(--sel);
+  border-color: var(--sel);
 }
 
 .version-label {
@@ -772,6 +819,9 @@ button {
   position: relative;
   flex: 1;
   overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-card);
+  box-shadow: var(--st-shadow-card);
   background: radial-gradient(120% 90% at 50% 8%, #f6f1e7 0%, #ece4d6 46%, #e0d6c5 100%);
 }
 
