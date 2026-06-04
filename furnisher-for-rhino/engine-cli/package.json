@@ -1,0 +1,13 @@
+{
+  "name": "furnisher-cli",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Headless CLI wrapper around furnisher-engine. Reads a room/door request as JSON on stdin and writes furnishing results as JSON on stdout. Used by the Grasshopper plugin (furnisher-for-rhino) to run the exact same placement engine as the app.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  }
+}

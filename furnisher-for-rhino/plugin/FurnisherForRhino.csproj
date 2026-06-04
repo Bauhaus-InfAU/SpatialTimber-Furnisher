@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Rhino 8 runs on .NET 7. The .gha is just a renamed managed DLL. -->
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <TargetExt>.gha</TargetExt>
+    <Version>0.1.0</Version>
+    <Title>Furnisher for Rhino</Title>
+    <Company>NeoBIM</Company>
+    <Description>Grasshopper plugin that runs the SpatialTimber furnisher engine on room geometry read from Rhino layers.</Description>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- NU1701: Grasshopper pkg targets .NET Framework; fine to consume from net7. -->
+    <NoWarn>NU1701;NETSDK1086</NoWarn>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pulls in RhinoCommon + Grasshopper SDK. runtime assets excluded so we
+         don't ship Rhino's own DLLs inside the plugin. -->
+    <PackageReference Include="Grasshopper" Version="8.0.23304.9001" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+</Project>

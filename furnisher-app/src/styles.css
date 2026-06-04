@@ -352,9 +352,10 @@ button {
   letter-spacing: -0.003em;
 }
 
-/* the steps card — its own chamfered card with internal scroll */
+/* the steps card — its own chamfered card; sizes to its content (compact when
+   sections are collapsed) but shrinks + scrolls if it outgrows the space */
 .pipeline-steps {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1346,7 +1347,7 @@ button {
   padding: 13px 16px;
   border: 1px solid var(--border-strong);
   border-radius: var(--st-r-card);
-  background: rgba(250, 249, 245, 0.96);
+  background: rgba(240, 238, 230, 0.97);   /* card colour — matches sidebar cards */
   box-shadow: var(--st-shadow-float);
   backdrop-filter: blur(16px);
   display: flex;
