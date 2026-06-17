@@ -28,11 +28,17 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-          cache-dependency-path: furnisher-app/package-lock.json
+          cache-dependency-path: |
+            furnisher-app/package-lock.json
+            furnisher-engine/package-lock.json
 
-      - name: Install dependencies
+      - name: Install engine dependencies
+        working-directory: furnisher-engine
+        run: npm ci
+
+      - name: Install app dependencies
         working-directory: furnisher-app
         run: npm ci
 
