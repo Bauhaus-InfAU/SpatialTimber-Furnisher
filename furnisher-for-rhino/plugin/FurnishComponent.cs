@@ -108,6 +108,18 @@ namespace FurnisherForRhino
                 "Human-readable layout summary per room. Connect to a Panel.\n" +
                 "Shows: furniture name, variant groups, current selection.",
                 GH_ParamAccess.list);
+            p.AddNumberParameter("Room Score", "Score",
+                "Quality score 0–100 per room. Based on how many placement options exist " +
+                "(more options = higher score). Weighted by furniture importance.",
+                GH_ParamAccess.list);
+            p.AddCurveParameter("Doors", "D",
+                "Door visualisation curves (panel line + swing arc), one set per door. " +
+                "Tree path {roomIndex, doorIndex}.",
+                GH_ParamAccess.tree);
+            p.AddTextParameter("Debug JSON", "JSON",
+                "The exact JSON request sent to the engine. Connect to a Panel to inspect " +
+                "or copy-paste for offline debugging.",
+                GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
@@ -167,6 +179,15 @@ namespace FurnisherForRhino
                 Selections = selData,
             };
 
+            // ─── Capture debug JSON before sending ────────────────────────────
+            string debugJson = System.Text.Json.JsonSerializer.Serialize(request,
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                    WriteIndented = false,
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                });
+
             // ─── Run engine ───────────────────────────────────────────────────
             EngineResponse response;
             try
@@ -194,6 +215,8 @@ namespace FurnisherForRhino
             var selVariant   = new GH_Structure<GH_Integer>();
             var selPosition  = new GH_Structure<GH_Integer>();
             var infoLines    = new List<string>();
+            var roomScores   = new List<double>();
+            var doorCurves   = new GH_Structure<GH_Curve>();
 
             for (int r = 0; r < response.Rooms.Length; r++)
             {
@@ -239,7 +262,19 @@ namespace FurnisherForRhino
                     if (small != null) footprints.Append(new GH_Curve(small), path);
                 }
 
+                // Score
+                roomScores.Add(ro.Score);
+                infoSb.AppendLine($"  Score: {ro.Score:F1}/100");
                 infoLines.Add(infoSb.ToString().TrimEnd());
+
+                // Door swing curves
+                for (int d = 0; d < ro.Doors.Length; d++)
+                {
+                    var doorPath = new GH_Path(r, d);
+                    foreach (var crv in MakeDoorCurves(ro.Doors[d]))
+                        doorCurves.Append(new GH_Curve(crv), doorPath);
+                }
+
                 foreach (string w in ro.Warnings)
                     warnings.Add($"[{ro.Name}] {w}");
             }
@@ -259,6 +294,9 @@ namespace FurnisherForRhino
             DA.SetDataTree(12, selVariant);
             DA.SetDataTree(13, selPosition);
             DA.SetDataList(14, infoLines);
+            DA.SetDataList(15, roomScores);
+            DA.SetDataTree(16, doorCurves);
+            DA.SetData(17, debugJson);
         }
 
         // ─── Helpers ──────────────────────────────────────────────────────────
@@ -317,6 +355,47 @@ namespace FurnisherForRhino
                     poly.Add(new Point3d(f[0], f[1], 0.0));
             }
             return poly.Count >= 2 ? new PolylineCurve(poly) : null;
+        }
+
+        /// <summary>
+        /// Build door visualisation curves (panel line + swing arc).
+        /// rect = [c0, c1, c2, c3]:
+        ///   c0 = door - wallDir*dw/2,  c1 = door + wallDir*dw/2  (on the wall)
+        ///   c3 = c0 + inward*dw,       c2 = c1 + inward*dw        (into the room)
+        ///
+        /// HingeAtIndex selects which wall corner is the hinge so the door swings
+        /// toward the room interior (away from the nearest corner).
+        ///   0 → hinge=c0, panel end=c3, arc sweeps c3→c1
+        ///   1 → hinge=c1, panel end=c2, arc sweeps c2→c0
+        /// </summary>
+        private static IEnumerable<Curve> MakeDoorCurves(DoorOut door)
+        {
+            double[][] r = door.Rect;
+            if (r.Length < 4) yield break;
+
+            var c0 = new Point3d(r[0][0], r[0][1], 0);
+            var c1 = new Point3d(r[1][0], r[1][1], 0);
+            var c2 = new Point3d(r[2][0], r[2][1], 0);
+            var c3 = new Point3d(r[3][0], r[3][1], 0);
+
+            Point3d hinge, wallEnd, panelEnd;
+            if (door.HingeAtIndex == 0) { hinge = c0; wallEnd = c1; panelEnd = c3; }
+            else                        { hinge = c1; wallEnd = c0; panelEnd = c2; }
+
+            // Panel line: hinge → panel end (door in open/90° position)
+            yield return new LineCurve(hinge, panelEnd);
+
+            // Arc from panelEnd to wallEnd, centred at hinge (quarter circle).
+            // Midpoint at 45°: bisect the two radius vectors.
+            Vector3d toPanelEnd = panelEnd - hinge;
+            Vector3d toWallEnd  = wallEnd  - hinge;
+            Vector3d midDir = toPanelEnd + toWallEnd;
+            if (midDir.Length < 1e-9) yield break;
+            midDir.Unitize();
+            var arcMid = hinge + midDir * door.Width;
+
+            var arc = new Arc(panelEnd, arcMid, wallEnd);
+            if (arc.IsValid) yield return new ArcCurve(arc);
         }
 
         private static string ResolveCliPath(string given)

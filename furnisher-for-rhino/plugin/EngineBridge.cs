@@ -56,10 +56,32 @@ namespace FurnisherForRhino
         public double[][] SmallBbox { get; set; } = Array.Empty<double[]>();
     }
 
+    internal sealed class StepScoreOut
+    {
+        public string FurnitureName { get; set; } = "";
+        public int PreferredCount { get; set; }
+        public int FallbackCount { get; set; }
+        public bool UsedFallback { get; set; }
+        public double NodeScore { get; set; }
+        public double LevelWeight { get; set; }
+    }
+
+    internal sealed class DoorOut
+    {
+        /// <summary>[c0,c1,c2,c3]: wall pts c0,c1; inward pts c3=c0+inward, c2=c1+inward.</summary>
+        public double[][] Rect { get; set; } = Array.Empty<double[]>();
+        public double Width { get; set; }
+        /// <summary>0 = hinge at c0 (panel→c3, arc c3→c1). 1 = hinge at c1 (panel→c2, arc c2→c0).</summary>
+        public int HingeAtIndex { get; set; }
+    }
+
     internal sealed class RoomOut
     {
         public string Name { get; set; } = "";
+        public double Score { get; set; }
+        public StepScoreOut[] StepScores { get; set; } = Array.Empty<StepScoreOut>();
         public StepOut[] Steps { get; set; } = Array.Empty<StepOut>();
+        public DoorOut[] Doors { get; set; } = Array.Empty<DoorOut>();
         public string[] Warnings { get; set; } = Array.Empty<string>();
     }
 

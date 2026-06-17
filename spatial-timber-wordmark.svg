@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 268 44" role="img" aria-label="SpatialTimber wordmark">
+  <title>SpatialTimber</title>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@700;500&amp;display=swap');
+      .spatial { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 700; font-size: 28px; fill: #141413; letter-spacing: -0.022em; }
+      .timber  { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 500; font-size: 28px; fill: #141413; letter-spacing: -0.022em; }
+    </style>
+  </defs>
+  <text y="32">
+    <tspan class="spatial">Spatial</tspan><tspan class="timber">Timber</tspan>
+  </text>
+</svg>

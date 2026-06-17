@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
-import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon } from "@engine/index";
+import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, scoreRoom } from "@engine/index";
 import type { PlacedFurniture, StepOptions, PlacementOptions } from "@engine/types";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
@@ -746,7 +746,7 @@ function EdgeEditor({
           <circle
             key={`edge-${i}`}
             className={`edge-handle${isActive ? " active" : ""}`}
-            cx={mx} cy={my} r="0.18"
+            cx={mx} cy={my} r="0.09"
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => handleEdgePointerDown(e, i)}
             onPointerMove={handlePointerMove}
@@ -763,7 +763,7 @@ function EdgeEditor({
           <circle
             key={`vert-${i}`}
             className={`vertex-handle${isActive ? " active" : ""}`}
-            cx={pt.x} cy={pt.y} r="0.13"
+            cx={pt.x} cy={pt.y} r="0.08"
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => handleVertexPointerDown(e, i)}
             onPointerMove={handlePointerMove}
@@ -845,8 +845,8 @@ function DoorSwing({ room }: { room: DrawnRoom }) {
               className="door-arc"
               d={`M ${panelEnd.x} ${panelEnd.y} A ${radius} ${radius} 0 0 ${sweepFlag} ${arcEnd.x} ${arcEnd.y}`}
             />
-            <circle className="door-hinge" cx={hinge.x} cy={hinge.y} r="0.09" />
-            <circle className="door-center" cx={doorPoint.x} cy={doorPoint.y} r="0.13" />
+            <circle className="door-hinge" cx={hinge.x} cy={hinge.y} r="0.035" />
+            <circle className="door-center" cx={doorPoint.x} cy={doorPoint.y} r="0.05" />
           </g>
         );
       })}
@@ -894,7 +894,7 @@ function WindowDisplay({ room }: { room: DrawnRoom }) {
             <line x1={inner(start).x} y1={inner(start).y} x2={inner(end).x} y2={inner(end).y} className="window-inner" />
             <line x1={start.x} y1={start.y} x2={inner(start).x} y2={inner(start).y} className="window-jamb" />
             <line x1={end.x} y1={end.y} x2={inner(end).x} y2={inner(end).y} className="window-jamb" />
-            <circle className="window-center" cx={snap.x} cy={snap.y} r="0.07" />
+            <circle className="window-center" cx={snap.x} cy={snap.y} r="0.08" />
           </g>
         );
       })}
@@ -1427,7 +1427,6 @@ function ViewerLayer({
           )}
         </g>
       )}
-      <circle className="origin-point" cx="0" cy="0" r="0.12" />
       <ScaleBarOverlay transform={transform} />
     </svg>
   );
@@ -1545,9 +1544,14 @@ function VariantControlPanel({
   onStepChange: (stepIndex: number, newIndex: number) => void;
 }) {
   if (roomResult.steps.length === 0) return null;
+  const { score } = scoreRoom(roomResult.roomName, { steps: roomResult.steps, warnings: roomResult.warnings });
+  const scoreColor = score >= 80 ? "var(--st-olive)" : score >= 50 ? "var(--accent)" : "var(--accent-deep)";
   return (
     <div className="variant-panel" onClick={(e) => e.stopPropagation()}>
-      <div className="variant-panel-header">{roomResult.roomName}</div>
+      <div className="variant-panel-header">
+        <span>{roomResult.roomName}</span>
+        <span className="variant-score" style={{ color: scoreColor }}>{score.toFixed(0)}</span>
+      </div>
       {roomResult.steps.map((step, i) => (
         <VariantStepRow key={i} step={step} onChange={(idx) => onStepChange(i, idx)} />
       ))}
@@ -1832,6 +1836,41 @@ export default function App() {
     setFurnishedRooms((current) => current.filter((r) => r.roomId !== roomId));
   }
 
+  // Greedy best-first: for each step in sequence, try every available option
+  // and commit to the one that gives the highest room score for the full pipeline.
+  // Complexity: O(steps × options) pipeline runs — fast in practice for typical rooms.
+  function findBestInitialResult(
+    room: EngineRoom,
+    aptType: number,
+    opts: { pipeline?: Pipeline; library?: FurnitureLibrary },
+  ) {
+    const initial = runRoomPipelineAt(room, aptType, [], opts);
+    const stepCount = initial.steps.length;
+    if (stepCount === 0) return initial;
+
+    const chosen: number[] = [];
+
+    for (let s = 0; s < stepCount; s++) {
+      const current = runRoomPipelineAt(room, aptType, chosen, opts);
+      const optCount = current.steps[s]?.allOptions.length ?? 0;
+
+      if (optCount <= 1) { chosen.push(0); continue; }
+
+      let bestScore = -1;
+      let bestIdx   = 0;
+      for (let opt = 0; opt < optCount; opt++) {
+        const { score } = scoreRoom(
+          room.name,
+          runRoomPipelineAt(room, aptType, [...chosen, opt], opts),
+        );
+        if (score > bestScore) { bestScore = score; bestIdx = opt; }
+      }
+      chosen.push(bestIdx);
+    }
+
+    return runRoomPipelineAt(room, aptType, chosen, opts);
+  }
+
   function doFurnish(roomsToUse: DrawnRoom[], config: PipelineConfig) {
     const uniqueRooms = dedupeRooms(roomsToUse);
     const aptType = config.aptTypeOverride ?? inferApartmentType(uniqueRooms);
@@ -1842,7 +1881,7 @@ export default function App() {
     const results: FurnishedRoomResult[] = [];
     for (const { roomId, room } of engineRooms) {
       try {
-        const result = runRoomPipelineAt(room, aptType, [], { pipeline: customPipeline, library: customLibrary });
+        const result = findBestInitialResult(room, aptType, { pipeline: customPipeline, library: customLibrary });
         results.push({ roomId, roomName: room.name, steps: result.steps, warnings: Array.from(new Set(result.warnings)) });
       } catch (error) {
         results.push({ roomId, roomName: room.name, steps: [], warnings: [error instanceof Error ? error.message : "Furniture placement failed."] });
@@ -2077,7 +2116,6 @@ export default function App() {
   const [showTransitionAreas, setShowTransitionAreas] = useState(false);
 
   const isFurnished = furnishedRooms.length > 0;
-  const hasMessages = furnishError !== null || furnishedRooms.some((r) => r.warnings.length > 0);
   const computedAptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
 
   return (
@@ -2148,16 +2186,9 @@ export default function App() {
           </div>
         ) : null}
 
-        {hasMessages ? (
+        {furnishError ? (
           <div className="furnish-messages">
-            {furnishError ? <strong>{furnishError}</strong> : null}
-            {furnishedRooms.flatMap((room) =>
-              room.warnings.map((warning) => (
-                <span key={`${room.roomId}-${warning}`}>
-                  {room.roomName}: {warning}
-                </span>
-              )),
-            )}
+            <strong>{furnishError}</strong>
           </div>
         ) : null}
 

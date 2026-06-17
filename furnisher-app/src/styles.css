@@ -968,10 +968,7 @@ button {
 }
 
 .drawn-room > circle {
-  fill: var(--st-paper);
-  stroke: currentColor;
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
+  display: none;   /* suppressed for all rooms — EdgeEditor handles selected-room vertices */
 }
 
 /* ─── Room labels ──────────────────────────────────────────────────────────── */
@@ -1051,25 +1048,25 @@ button {
 .room-door .door-arc {
   fill: none;
   stroke: var(--st-ink-2);
-  stroke-width: 2;
+  stroke-width: 1.2;
   vector-effect: non-scaling-stroke;
 }
 
 .room-door .door-arc {
-  opacity: 0.85;
+  opacity: 0.7;
 }
 
 .room-door .door-hinge {
-  fill: var(--st-ink-2);
+  fill: var(--st-ink);
   stroke: var(--st-paper);
-  stroke-width: 1.4;
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
 .room-door .door-center {
-  fill: var(--st-paper);
-  stroke: var(--st-ink-2);
-  stroke-width: 2.2;
+  fill: var(--st-ink);
+  stroke: var(--st-paper);
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
@@ -1097,9 +1094,9 @@ button {
 }
 
 .window-center {
-  fill: var(--st-paper);
-  stroke: var(--st-ink-2);
-  stroke-width: 2;
+  fill: var(--st-ink);
+  stroke: var(--st-paper);
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
@@ -1339,7 +1336,7 @@ button {
 
 .variant-panel {
   position: absolute;
-  bottom: 20px;
+  top: 20px;
   right: 20px;
   z-index: 2;
   min-width: 280px;
@@ -1356,6 +1353,9 @@ button {
 }
 
 .variant-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   font-family: var(--st-mono);
   font-size: 10.5px;
   font-weight: 500;
@@ -1364,6 +1364,15 @@ button {
   color: var(--text-secondary);
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
+}
+
+.variant-score {
+  font-family: var(--st-mono);
+  font-size: 17px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
 }
 
 .variant-step-block {
@@ -1515,7 +1524,7 @@ button {
 .edge-handle {
   fill: var(--st-paper);
   stroke: var(--st-ink);
-  stroke-width: 2;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   cursor: grab;
   transition: fill 100ms;
@@ -1530,17 +1539,18 @@ button {
   cursor: grabbing;
 }
 
+/* vertex handles — solid black dots; white ring separates them from the room fill */
 .vertex-handle {
-  fill: var(--st-paper);
-  stroke: var(--st-ink);
-  stroke-width: 2;
+  fill: var(--st-ink);
+  stroke: var(--st-paper);
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
   cursor: move;
   transition: fill 100ms;
 }
 
 .vertex-handle:hover {
-  fill: var(--clay-tint-strong);
+  fill: var(--st-gray);
 }
 
 .vertex-handle.active {
