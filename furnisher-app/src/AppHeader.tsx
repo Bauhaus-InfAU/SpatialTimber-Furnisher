@@ -4,6 +4,7 @@
 // left; project / source links + funder logos on the right.
 
 const GITHUB_URL = "https://github.com/neobim/SpatialTimber-Furnisher";
+const BASE = import.meta.env.BASE_URL;
 
 export function AppHeader() {
   return (
@@ -11,7 +12,7 @@ export function AppHeader() {
       <div className="brand">
         <div className="st-lockup">
           <span className="logo">
-            <img className="st-mark" src="/brand/logo-accent.svg" alt="SpatialTimber" />
+            <img className="st-mark" src={`${BASE}brand/logo-accent.svg`} alt="SpatialTimber" />
             <span className="wm">
               <span className="s-spatial">Spatial</span>
               <span className="s-timber">Timber</span>
@@ -20,7 +21,7 @@ export function AppHeader() {
           <span className="lockup-div" />
           <span className="st-mod">
             <span className="glyph-tile">
-              <img src="/brand/glyph-furnisher.svg" alt="" aria-hidden="true" />
+              <img src={`${BASE}brand/glyph-furnisher.svg`} alt="" aria-hidden="true" />
             </span>
             <span className="mod-text">
               <span className="mod-kicker">Layout · Furnishing</span>
@@ -47,10 +48,10 @@ export function AppHeader() {
           <span className="funded-lbl">Funded by</span>
           <div className="funded-logos">
             <a href="https://www.bmwsb.bund.de" target="_blank" rel="noopener noreferrer" title="Bundesministerium für Wohnen, Stadtentwicklung und Bauwesen">
-              <img className="logo-bmwsb" src="/brand/bmwsb_logo.svg" alt="BMWSB" />
+              <img className="logo-bmwsb" src={`${BASE}brand/bmwsb_logo.svg`} alt="BMWSB" />
             </a>
             <a href="https://www.zukunftbau.de" target="_blank" rel="noopener noreferrer" title="Zukunft Bau — Fördern, Forschen, Entwickeln">
-              <img className="logo-zb" src="/brand/zukunftbau_logo.png" alt="Zukunft Bau" />
+              <img className="logo-zb" src={`${BASE}brand/zukunftbau_logo.png`} alt="Zukunft Bau" />
             </a>
           </div>
         </div>
