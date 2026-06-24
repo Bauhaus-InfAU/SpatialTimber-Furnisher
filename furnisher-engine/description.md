@@ -90,16 +90,15 @@ Apply `transformPoint(src, tgt)` to all geometry, `bboxBig`, and `bboxSmall`.
 
 **Post-placement check**: all `bboxSmall` corners must be inside the room polygon (1% inset toward centroid to avoid boundary false-rejections).
 
-### Kitchen — Special L-corner algorithm (`getKitchenPlacements`)
-Kitchen variants use a **3-point `linePlacement`** encoding an L-shape:
-`lp[0]` = arm-1 end, `lp[1]` = L-corner, `lp[2]` = arm-2 end.
+### Corner-guideline pieces (corner placement)
+A variant whose `linePlacement` has **3+ points** encodes a corner guideline rather than a single wall segment: `lp[0]` = arm-1 end, `lp[1]` = corner, `lp[2]` = arm-2 end. Such variants are placed at the room's 90° corners (arm-1 → next wall, arm-2 → prev wall; the mirror covers the swapped assignment). This is selected per-variant by guideline shape, so a corner-guideline bed is placed in corners just like a kitchen counter.
 
-For each 90° room corner:
-1. **Wall length check** — extended wall ≥ arm length for both arms
-2. **Reduced length check** — distance from corner to door gap ≥ arm length (no arm crosses door opening)
-3. **70 cm depth raycast** — 20 midpoint-sampled rays along each arm, against room + door obstacles
+**Kitchen** (`placeKitchenVariant`) — the counter is a thin L, so clearance is checked with a **70 cm depth raycast** (20 midpoint-sampled rays per arm) plus a wall-length and door-gap (reduced-length) check, and `smallCutout` is the 6-corner L-polygon.
 
-Single fixed assignment: arm-1 → next wall, arm-2 → prev wall (avoids mirror duplicates).
+**Other corner pieces** (`placeCornerVariant`, e.g. beds) — the clearance is the variant's own bbox, so the check is plain containment: `bboxSmall` (footprint) must fit the edge polygon and `bboxBig` (clearance) the collision polygon. Cutouts are the transformed bbox rectangles, identical to wall-line pieces.
+
+### Mirrored options
+For every variant the placer also enumerates its **mirror** — the same piece against a reversed guiding line (`mirrorVariant`: reverse a 2-point line, swap the arm endpoints of a corner). Mirror placements are emitted under the **same `variantIndex`** as their base; base placements are enumerated first and `dedupePlacements` drops any mirror whose footprint matches an already-seen placement. A symmetric variant's mirror therefore adds nothing, while an asymmetric one (a footprint offset to one side, or an L with unequal arms) contributes its left-right-flipped placements as extra options.
 
 ---
 
@@ -113,7 +112,7 @@ After a placement, two updated room polygons are computed using **`polygon-clipp
 | `roomRdc` | `room − doorRect − largeCutout` | Clearance budget after door zone + pathway removed |
 
 **Cutout polygons** stored on `PlacedFurniture`:
-- Regular furniture: `smallCutout = bboxSmall` (4-corner rect), `largeCutout = bboxBig` (4-corner rect)
+- Regular furniture (wall-line and non-kitchen corner pieces): `smallCutout = bboxSmall` (4-corner rect), `largeCutout = bboxBig` (4-corner rect)
 - Kitchen: `smallCutout` = **6-corner L-polygon** (arm2End → corner → arm1End → 3 inward points at 70 cm depth), `largeCutout = bboxBig` rect
 
 If the subtraction splits the room into disconnected regions, the **largest region** is selected.

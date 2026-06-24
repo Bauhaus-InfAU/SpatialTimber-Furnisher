@@ -443,12 +443,175 @@ function transformPoint(pt: Point2D, src: Frame2D, tgt: Frame2D): Point2D {
   ];
 }
 
+// ─── Corner-guideline detection & mirroring ──────────────────────────────────
+
+/** A variant is placed at a room corner when its guiding line is a corner
+ *  (3+ points: arm-end → corner → arm-end) rather than a single wall segment. */
+function isCornerVariant(variant: FurnitureVariant): boolean {
+  return variant.linePlacement.points.length >= 3;
+}
+
+/**
+ * Return the mirror of a variant — the *same* geometry placed against a
+ * reversed guiding line, so the engine lays it out left-right flipped.
+ *
+ *   line variant   (A → B)        →  reversed guiding line (B → A)
+ *   corner variant (A → C → B)    →  arms swapped (B → C → A)
+ *
+ * Only the guiding line is rewritten; bbox and geometry points are untouched,
+ * because the placer derives the source frame (and thus the mirror) from the
+ * guiding line. Mirrors of a symmetric variant reproduce the original placement
+ * and are removed later by `dedupePlacements`.
+ */
+function mirrorVariant(variant: FurnitureVariant): FurnitureVariant {
+  const pts = variant.linePlacement.points;
+  let mirrored: Point2D[];
+  if (pts.length >= 3) {
+    // corner: swap the two arm endpoints, keep the corner (index 1) in place
+    mirrored = [pts[2], pts[1], pts[0], ...pts.slice(3)] as Point2D[];
+  } else {
+    mirrored = [...pts].reverse() as Point2D[];
+  }
+  return { ...variant, linePlacement: { points: mirrored } };
+}
+
+/** Footprint signature for de-duplication (cm precision, order-independent). */
+function placementSignature(p: PlacedFurniture): string {
+  return p.transformedSmallBbox
+    .map((pt) => `${pt[0].toFixed(2)},${pt[1].toFixed(2)}`)
+    .sort()
+    .join("|");
+}
+
+/** Drop placements with an identical footprint, keeping the first seen. */
+function dedupePlacements(options: PlacementOption[]): PlacementOption[] {
+  const seen = new Set<string>();
+  const out: PlacementOption[] = [];
+  for (const opt of options) {
+    const sig = placementSignature(opt.placed);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    out.push(opt);
+  }
+  return out;
+}
+
+/** True if all points lie inside `poly` after a 1 % inset toward their centroid. */
+function insetInside(pts: Point2D[], poly: Point2D[]): boolean {
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  return pts.every((p) =>
+    pointInPolygon([p[0] * 0.99 + cx * 0.01, p[1] * 0.99 + cy * 0.01], poly),
+  );
+}
+
+// ─── Generic corner placement (non-kitchen corner-guideline pieces) ───────────
+
+/**
+ * Place one corner-guideline variant (e.g. a bed whose head + side sit against
+ * two perpendicular walls) at the room's corners. Unlike the kitchen counter,
+ * the clearance is the variant's own bbox, so the check is simple containment:
+ * the footprint (bboxSmall) must fit the edge polygon and the clearance zone
+ * (bboxBig) must fit the collision polygon.
+ */
+function placeCornerVariant(
+  room: Room,
+  entry: FurnitureEntry,
+  variant: FurnitureVariant,
+  vi: number,
+  opts: PlacementOptions,
+): PlacementOption[] {
+  const lp = variant.linePlacement.points;
+  if (lp.length < 3) return [];
+
+  const edgePoly      = opts.edgePolygon      ?? room.polygon;
+  const collisionPoly = opts.collisionPolygon ?? room.polygon;
+  const { polygon } = room;
+  const n = polygon.length;
+  const options: PlacementOption[] = [];
+
+  const cornerSrc  = lp[1] as Point2D;
+  const arm1EndSrc = lp[0] as Point2D;
+  const arm2EndSrc = lp[2] as Point2D;
+  const arm1Dir_src = normalize(sub(arm1EndSrc, cornerSrc));
+  const arm2Dir_src = normalize(sub(arm2EndSrc, cornerSrc));
+  const arm1Len = segmentLength(cornerSrc, arm1EndSrc);
+  const arm2Len = segmentLength(cornerSrc, arm2EndSrc);
+
+  const srcFrame: Frame2D = { origin: cornerSrc, xAxis: arm2Dir_src, yAxis: arm1Dir_src };
+
+  for (let i = 0; i < n; i++) {
+    const cornerPt = polygon[i];
+    const prevPt   = polygon[(i - 1 + n) % n];
+    const nextPt   = polygon[(i + 1) % n];
+
+    const prevDir = normalize(sub(prevPt, cornerPt));
+    const nextDir = normalize(sub(nextPt, cornerPt));
+    const prevLen = segmentLength(cornerPt, prevPt);
+    const nextLen = segmentLength(cornerPt, nextPt);
+
+    // corner must be ~90°
+    if (Math.abs(dot(prevDir, nextDir)) > 0.15) continue;
+
+    // extend each arm along collinear continuation of the wall (same as kitchen)
+    const nextCanFwd = pointInPolygon(add(nextPt, scalePt(nextDir, 0.01)), polygon);
+    const prevCanFwd = pointInPolygon(add(prevPt, scalePt(prevDir, 0.01)), polygon);
+    const nextTFwd   = nextCanFwd
+      ? Math.min(rayNearestWallHit(nextPt, nextDir, polygon, [i, (i + 1) % n]), nextLen)
+      : 0;
+    const prevTFwd   = prevCanFwd
+      ? Math.min(
+          rayNearestWallHit(prevPt, prevDir, polygon, [(i - 1 + n) % n, (i - 2 + n) % n]),
+          prevLen,
+        )
+      : 0;
+    const arm1WallLen = nextLen + (nextTFwd < Infinity ? nextTFwd : 0);
+    const arm2WallLen = prevLen + (prevTFwd < Infinity ? prevTFwd : 0);
+
+    // arm1 maps to the "next" wall, arm2 to the "prev" wall (mirror handled by mirrorVariant)
+    if (arm1WallLen < arm1Len - 1e-6 || arm2WallLen < arm2Len - 1e-6) continue;
+
+    const tgtFrame: Frame2D = { origin: cornerPt, xAxis: prevDir, yAxis: nextDir };
+    const tp = (p: Point2D) => transformPoint(p, srcFrame, tgtFrame);
+
+    const transformedSmallBbox = variant.bboxSmall.points.map((p) => tp(p as Point2D));
+    const transformedBbox      = variant.bboxBig.points.map((p)   => tp(p as Point2D));
+
+    // footprint must avoid the door + previous footprints; clearance must fit the room
+    if (!insetInside(transformedSmallBbox, edgePoly)) continue;
+    if (!insetInside(transformedBbox, collisionPoly)) continue;
+
+    const arm1EndPt = add(cornerPt, scalePt(nextDir, arm1Len));
+    const arm2EndPt = add(cornerPt, scalePt(prevDir, arm2Len));
+
+    options.push({
+      variantIndex: vi,
+      placed: {
+        name: `${entry.furnitureName} — V${vi + 1}`,
+        transformedGeometry: variant.geometry.map((geo) => ({
+          closed: geo.closed,
+          points: geo.points.map((p) => tp(p as Point2D)),
+        })),
+        transformedBbox,
+        transformedSmallBbox,
+        wallSegment: [arm1EndPt, arm2EndPt],
+        smallCutout: transformedSmallBbox,
+        largeCutout: transformedBbox,
+      },
+    });
+  }
+
+  return options;
+}
+
 // ─── Kitchen L-corner placement ──────────────────────────────────────────────
 
-function getKitchenPlacements(room: Room, entry: FurnitureEntry): PlacementOption[] {
-  const piece = entry.pieces[0];
-  if (!piece) return [];
-
+function placeKitchenVariant(
+  room: Room,
+  entry: FurnitureEntry,
+  variant: FurnitureVariant,
+  vi: number,
+): PlacementOption[] {
   const dw = doorWidth(room.name);
   const doorObstacles = getDoorObstacleSegments(room, dw);
   const { polygon } = room;
@@ -491,15 +654,10 @@ function getKitchenPlacements(room: Room, entry: FurnitureEntry): PlacementOptio
     return true;
   };
 
-  for (let vi = 0; vi < piece.variants.length; vi++) {
-    const variant = piece.variants[vi];
-    const lp = variant.linePlacement.points;
+  const lp = variant.linePlacement.points;
+  if (lp.length < 3) return [];
 
-    if (lp.length < 3) {
-      console.log(`[kitchen] V${vi + 1}: no 3-point linePlacement, skipping`);
-      continue;
-    }
-
+  {
     const cornerSrc  = lp[1] as Point2D;
     const arm1EndSrc = lp[0] as Point2D;
     const arm2EndSrc = lp[2] as Point2D;
@@ -628,20 +786,15 @@ function windowHalfWidth(roomName: string): number {
   return roomName === "Bathroom" || roomName === "WC" || roomName === "Kitchen" ? 0.5 : 0.75;
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
+// ─── Wall-line placement (single-segment guideline pieces) ────────────────────
 
-/**
- * Enumerate all valid placements across all variants of the first piece.
- */
-export function getAllPlacements(
+function placeLineVariant(
   room: Room,
   entry: FurnitureEntry,
-  opts: PlacementOptions = {},
+  variant: FurnitureVariant,
+  vi: number,
+  opts: PlacementOptions,
 ): PlacementOption[] {
-  if (entry.category === "Kitchen") return getKitchenPlacements(room, entry);
-  const piece = entry.pieces[0];
-  if (!piece) return [];
-
   const dw = doorWidth(room.name);
   const doorObstacles = getDoorObstacleSegments(room, dw);
   const windowSensitive = WINDOW_SENSITIVE_FURNITURE.has(entry.furnitureName);
@@ -651,9 +804,7 @@ export function getAllPlacements(
   const edgePoly      = opts.edgePolygon      ?? room.polygon;
   const collisionPoly = opts.collisionPolygon ?? room.polygon;
 
-  for (let vi = 0; vi < piece.variants.length; vi++) {
-    const variant = piece.variants[vi];
-
+  {
     const lp = variant.linePlacement.points;
     const linePlacementLength = segmentLength(lp[0] as Point2D, lp[1] as Point2D);
 
@@ -783,6 +934,54 @@ export function getAllPlacements(
   }
 
   return options;
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+/**
+ * Enumerate all valid placements across all variants of the first piece.
+ *
+ * Each variant is routed by the shape of its guiding line:
+ *   - a corner guideline (3+ points) → corner placement (kitchen counter for
+ *     Kitchen pieces, generic bbox-fit corner placement for everything else);
+ *   - a single segment → wall-line placement.
+ *
+ * For every variant we also try its mirror (the same piece against a reversed
+ * guiding line). Mirrors are emitted under the same `variantIndex` as their
+ * base, and base placements are enumerated first so that `dedupePlacements`
+ * keeps the base when a mirror lands on the same footprint. Symmetric variants
+ * therefore add no duplicates; asymmetric ones add their flipped option.
+ */
+export function getAllPlacements(
+  room: Room,
+  entry: FurnitureEntry,
+  opts: PlacementOptions = {},
+): PlacementOption[] {
+  const piece = entry.pieces[0];
+  if (!piece) return [];
+
+  const isKitchen = entry.category === "Kitchen";
+
+  const placeOne = (variant: FurnitureVariant, vi: number): PlacementOption[] => {
+    if (isCornerVariant(variant)) {
+      return isKitchen
+        ? placeKitchenVariant(room, entry, variant, vi)
+        : placeCornerVariant(room, entry, variant, vi, opts);
+    }
+    return placeLineVariant(room, entry, variant, vi, opts);
+  };
+
+  const options: PlacementOption[] = [];
+  // base variants first — these own the authoritative variantIndex
+  for (let vi = 0; vi < piece.variants.length; vi++) {
+    options.push(...placeOne(piece.variants[vi], vi));
+  }
+  // then mirrors — extra options under the same variantIndex, deduped against bases
+  for (let vi = 0; vi < piece.variants.length; vi++) {
+    options.push(...placeOne(mirrorVariant(piece.variants[vi]), vi));
+  }
+
+  return dedupePlacements(options);
 }
 
 /**
