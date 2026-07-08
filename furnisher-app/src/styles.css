@@ -2475,3 +2475,28 @@ button {
   font-size: 11px;
   color: var(--accent-deep);
 }
+
+/* ─── Dataset context areas on the canvas (corridors etc., display-only) ────── */
+
+.dataset-context-layer {
+  pointer-events: none;
+}
+
+.dataset-context-poly {
+  fill: var(--ink-tint-2);          /* ~8% ink — reads as inert ground */
+  stroke: var(--border-strong);
+  stroke-width: 0.025px;            /* world units (metres) */
+}
+
+.dataset-context-label {
+  fill: var(--st-gray);
+  opacity: 0.65;
+  font-family: var(--st-sans);
+  font-size: 0.17px;                /* world units — smaller than room labels */
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}

@@ -46,6 +46,9 @@ BATH_SUBTYPES = {"BATHROOM"}
 FURNISHABLE = KITCHEN_SUBTYPES | LIVING_SUBTYPES | SLEEPING_SUBTYPES | BATH_SUBTYPES
 BATH_FEATURES = {"BATHTUB", "SHOWER"}
 DOOR_SUBTYPES = {"DOOR", "ENTRANCE_DOOR"}
+# Not furnishable, but carried through as display-only context so apartments
+# don't render as floating rooms in the app.
+CONTEXT_SUBTYPES = {"CORRIDOR"}
 
 DOOR_ASSIGN_DIST = 0.4   # must match engine-cli ADJACENT_DOOR_THRESHOLD
 WINDOW_ASSIGN_DIST = 0.5 # exterior walls are thicker
@@ -287,6 +290,18 @@ def process_apartment(bfa, ent, stats):
         if any(dist_point_to_polygon(d, a["polygon"]) <= DOOR_ASSIGN_DIST for d in ent["doors"])
     )
 
+    # Display-only context areas (corridors): same frame, never sent to the engine.
+    context = []
+    for subtype, wkt in ent["context"]:
+        pts, _ = parse_wkt_polygon(wkt)
+        poly = clean_polygon(pts) if pts else None
+        if poly is None:
+            continue
+        context.append({
+            "subtype": subtype,
+            "polygon": [[round(x, 3), round(y, 3)] for x, y in map(rot, poly)],
+        })
+
     # Rotation/translation-invariant duplicate signature.
     sig_src = json.dumps(
         sorted((r["name"], edge_lengths(
@@ -302,6 +317,7 @@ def process_apartment(bfa, ent, stats):
         "apartment_id": ent["meta"].get("apartment_id", ""),
         "rooms": rooms,
         "doors": doors,
+        "context": context,
         "rotation": rotation,
         "signature": sig,
         "notes": notes,
@@ -322,7 +338,7 @@ def main():
     csv.field_size_limit(10_000_000)
 
     apartments = defaultdict(lambda: {
-        "areas": [], "bath_features": [], "doors": [], "windows": [],
+        "areas": [], "context": [], "bath_features": [], "doors": [], "windows": [],
         "meta": {}, "skipped": Counter(),
     })
     stats = Counter()
@@ -346,6 +362,8 @@ def main():
                 if st in FURNISHABLE:
                     ent["areas"].append((st, row["geometry"]))
                 else:
+                    if st in CONTEXT_SUBTYPES:
+                        ent["context"].append((st, row["geometry"]))
                     ent["skipped"][st] += 1
             elif et == "feature" and st in BATH_FEATURES:
                 pts, _ = parse_wkt_polygon(row["geometry"])
@@ -390,6 +408,7 @@ def main():
                 "apartment_id": rec["apartment_id"],
                 "rooms": rec["rooms"],
                 "doors": rec["doors"],
+                "context": rec["context"],
             }, separators=(",", ":")) + "\n")
 
     idx_path = os.path.join(args.out, "apartments_index.csv")

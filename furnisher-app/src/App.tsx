@@ -589,6 +589,35 @@ function RoomLabel({ room }: { room: DrawnRoom }) {
   );
 }
 
+// ─── Dataset context areas (corridors etc. — display-only) ───────────────────
+
+type DatasetContextArea = { subtype: string; points: Point2D[] };
+
+function DatasetContextLayer({ areas }: { areas: DatasetContextArea[] }) {
+  if (!areas.length) return null;
+  return (
+    <g className="dataset-context-layer" style={{ pointerEvents: "none" }}>
+      {areas.map((area, i) => {
+        const centroid = polygonCentroid(area.points);
+        return (
+          <g key={i}>
+            <path className="dataset-context-poly" d={pointsToPath(area.points, true)} />
+            <text
+              className="dataset-context-label"
+              x={centroid.x}
+              y={centroid.y}
+              textAnchor="middle"
+              dominantBaseline="central"
+            >
+              {area.subtype.toLowerCase()}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 // ─── EdgeEditor ───────────────────────────────────────────────────────────────
 
 function EdgeEditor({
@@ -1168,6 +1197,7 @@ function ViewerLayer({
   drawMode,
   transform,
   selectedFurnitureKey,
+  datasetContext,
   onCalibrationClick,
   onCalibrationMove,
   onRoomClick,
@@ -1192,6 +1222,7 @@ function ViewerLayer({
   drawMode: "rectangle" | "lines";
   transform: ViewerTransform;
   selectedFurnitureKey: FurnitureKey | null;
+  datasetContext: DatasetContextArea[];
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
   onRoomClick: (point: Point2D) => void;
@@ -1387,6 +1418,7 @@ function ViewerLayer({
           </g>
         );
       })}
+      <DatasetContextLayer areas={datasetContext} />
       {selectedTool === "scale2d" ? <ScaleCalibrationLayer calibration={calibration} /> : null}
       <RoomLayer
         draft={roomDraft}
@@ -1589,6 +1621,8 @@ export default function App() {
     roomOverrides: {},
   });
   const [selectedFurnitureKey, setSelectedFurnitureKey] = useState<FurnitureKey | null>(null);
+  // Non-furnishable areas (corridors, …) from a loaded dataset apartment — display-only.
+  const [datasetContext, setDatasetContext] = useState<DatasetContextArea[]>([]);
 
   // Non-passive wheel listener so preventDefault actually works and prevents browser zoom
   useEffect(() => {
@@ -1639,6 +1673,7 @@ export default function App() {
     setFurnishedRooms([]);
     setFurnishError(null);
     setSelectedRoomId(null);
+    setDatasetContext([]);
     setSelectedTool("upload");
   }
 
@@ -2092,10 +2127,21 @@ export default function App() {
     }
     if (!converted.length) return;
 
+    // Display-only context areas (corridors, …), translated with the SAME
+    // offset as the rooms. The offset itself is still computed from the
+    // furnishable geometry only, so room placement is unchanged.
+    const contextAreas: DatasetContextArea[] = (record.context ?? [])
+      .filter((c) => Array.isArray(c?.polygon) && c.polygon.length >= 3)
+      .map((c) => ({
+        subtype: typeof c.subtype === "string" && c.subtype.length > 0 ? c.subtype : "context",
+        points: c.polygon.map(translate),
+      }));
+
     // 3. Replace the drawing state (background images are left untouched).
     resetScaleCalibration();
     resetRoomDraft();
     setRooms(converted);
+    setDatasetContext(contextAreas);
     setFurnishedRooms([]);
     setSelectedRoomId(null);
     setSelectedFurnitureKey(null);
@@ -2107,9 +2153,11 @@ export default function App() {
     // 4. Fit the viewer: centre the apartment with ~10% margin on each side.
     //    The SVG viewBox is a square `metresAcross` wide centred on
     //    (centerX, centerY), so the max bbox dimension × 1.2 fits both axes.
+    //    Context areas are included so corridors aren't clipped offscreen.
     let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
-    for (const room of converted) {
-      for (const p of room.points) {
+    const fitPointLists = [...converted.map((r) => r.points), ...contextAreas.map((c) => c.points)];
+    for (const points of fitPointLists) {
+      for (const p of points) {
         if (p.x < bMinX) bMinX = p.x;
         if (p.y < bMinY) bMinY = p.y;
         if (p.x > bMaxX) bMaxX = p.x;
@@ -2249,6 +2297,7 @@ export default function App() {
           selectedTool={selectedTool}
           drawMode={drawMode}
           transform={transform}
+          datasetContext={datasetContext}
           onCalibrationClick={handleScaleCalibrationClick}
           onCalibrationMove={(p) => setScaleCalibration((c) => (c.p1 ? { ...c, cursor: p } : c))}
           onDoorClick={handleDoorClick}

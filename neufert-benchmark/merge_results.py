@@ -160,6 +160,7 @@ def main():
                 "apartment_id": req.get("apartment_id", ""),
                 "rooms": req["rooms"],
                 "doors": req["doors"],
+                "context": req.get("context", []),
                 "meta": {
                     "score": score,
                     "aptType": (r or {}).get("aptType"),

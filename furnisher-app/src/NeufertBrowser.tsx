@@ -20,11 +20,18 @@ export type NeufertMeta = {
   nFailedRooms?: number | null;
 };
 
+export type NeufertContextArea = {
+  subtype: string;
+  polygon: [number, number][];
+};
+
 export type NeufertRecord = {
   id: string;
   apartment_id: string;
   rooms: NeufertRoomRecord[];
   doors?: [number, number][];
+  /** Non-furnishable areas (corridors etc.) — display-only. Missing on old bundles. */
+  context?: NeufertContextArea[];
   meta?: NeufertMeta;
 };
 
