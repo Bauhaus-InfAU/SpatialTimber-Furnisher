@@ -6,9 +6,12 @@ Inputs
   ../neufert swiss dataset/apartment_simulations.csv  (total_area, number_of_rooms, floor)
 
 Outputs
-  out/results.jsonl   merged raw results (one line per unique apartment)
-  out/scores.csv      one row per apartment (duplicates expanded), flat columns
-                      for the dashboard / correlation analysis
+  out/results.jsonl             merged raw results (one line per unique apartment)
+  out/scores.csv                one row per apartment (duplicates expanded), flat
+                                columns for the dashboard / correlation analysis
+  out/neufert_apartments.jsonl  app bundle: geometry + metadata per unique
+                                apartment, loadable in furnisher-app's dataset
+                                browser via a local file picker
 """
 
 import csv
@@ -124,6 +127,50 @@ def main():
 
     print(f"scores.csv: {stats['written']} rows "
           f"({stats['missing_result']} missing, {stats['fatal_result']} fatal) -> {out_path}")
+
+    # 5. App bundle: one line per unique apartment, geometry + metadata.
+    group_size = Counter(row["representative_bfa"] for row in index_rows)
+    bundle_path = os.path.join(OUT, "neufert_apartments.jsonl")
+    n_bundle = 0
+    with open(os.path.join(OUT, "requests.jsonl"), encoding="utf-8") as fin, \
+         open(bundle_path, "w", encoding="utf-8") as fout:
+        fout.write(json.dumps({
+            "type": "neufert-bundle", "version": 1,
+            "source": "Neufert 4.0 (zenodo.org/records/14223942), unique layouts",
+        }) + "\n")
+        for line in fin:
+            req = json.loads(line)
+            bfa = req["id"]
+            r = results.get(bfa)
+            meta = sims.get(bfa, {})
+            rooms_res = (r or {}).get("rooms", [])
+            ok = [rm for rm in rooms_res if not rm.get("error") and rm.get("score") is not None]
+            wsum = sum(rm["area"] for rm in ok)
+            score = round(sum(rm["score"] * rm["area"] for rm in ok) / wsum, 1) if wsum else None
+            try:
+                nrooms = round(float(meta.get("number_of_rooms", "")))
+            except ValueError:
+                nrooms = None
+            try:
+                total_area = round(float(meta.get("total_area", "")), 1)
+            except ValueError:
+                total_area = None
+            fout.write(json.dumps({
+                "id": bfa,
+                "apartment_id": req.get("apartment_id", ""),
+                "rooms": req["rooms"],
+                "doors": req["doors"],
+                "meta": {
+                    "score": score,
+                    "aptType": (r or {}).get("aptType"),
+                    "nrooms": nrooms,
+                    "totalArea": total_area,
+                    "nDuplicates": group_size.get(bfa, 1),
+                    "nFailedRooms": len(rooms_res) - len(ok),
+                },
+            }, separators=(",", ":")) + "\n")
+            n_bundle += 1
+    print(f"app bundle: {n_bundle} apartments -> {bundle_path}")
 
 
 if __name__ == "__main__":

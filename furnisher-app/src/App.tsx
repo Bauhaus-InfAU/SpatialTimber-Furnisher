@@ -21,6 +21,7 @@ import type {
   CustomFurnitureDef,
 } from "./types";
 import { Sidebar } from "./Sidebar";
+import type { NeufertRecord } from "./NeufertBrowser";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2048,6 +2049,90 @@ export default function App() {
     setSelectedFurnitureKey(null);
   }
 
+  // ── Dataset browser (Neufert bundle) ────────────────────────────────────────
+
+  const datasetLoadSeq = useRef(0);
+
+  function handleLoadDatasetApartment(record: NeufertRecord) {
+    // 1. Translate all coordinates so the bounding-box min corner sits at (1, 1)
+    //    — the canvas prefers positive coordinates.
+    const allCoords: [number, number][] = [
+      ...record.rooms.flatMap((r) => [...r.polygon, ...(r.windows ?? [])]),
+      ...(record.doors ?? []),
+    ];
+    if (!allCoords.length) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    for (const [x, y] of allCoords) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+    }
+    const shiftX = 1 - minX;
+    const shiftY = 1 - minY;
+    const translate = ([x, y]: [number, number]): Point2D => ({ x: x + shiftX, y: y + shiftY });
+
+    // 2. Convert to DrawnRoom[]. Global doors are attached to every room whose
+    //    boundary is within ADJACENT_DOOR_THRESHOLD of the door point.
+    const seq = ++datasetLoadSeq.current;
+    const globalDoors = (record.doors ?? []).map(translate);
+    const converted: DrawnRoom[] = [];
+    for (const room of record.rooms) {
+      const type = (room.name.startsWith("Children") ? "Children" : room.name) as RoomToolId;
+      const tool = ROOM_TOOLS.find((t) => t.id === type);
+      if (!tool || !Array.isArray(room.polygon) || room.polygon.length < 3) continue;
+      const points = room.polygon.map(translate);
+      converted.push({
+        id: `nf-${seq}-${converted.length}`,
+        type,
+        points,
+        color: tool.color,
+        doors: globalDoors.filter((d) => distPointToPolygonBoundary(d, points) <= ADJACENT_DOOR_THRESHOLD),
+        windows: (room.windows ?? []).map(translate),
+      });
+    }
+    if (!converted.length) return;
+
+    // 3. Replace the drawing state (background images are left untouched).
+    resetScaleCalibration();
+    resetRoomDraft();
+    setRooms(converted);
+    setFurnishedRooms([]);
+    setSelectedRoomId(null);
+    setSelectedFurnitureKey(null);
+    setFurnishError(null);
+    const nextConfig: PipelineConfig = { ...pipelineConfig, roomOverrides: {} };
+    setPipelineConfig(nextConfig);
+    setSelectedTool("furnish");
+
+    // 4. Fit the viewer: centre the apartment with ~10% margin on each side.
+    //    The SVG viewBox is a square `metresAcross` wide centred on
+    //    (centerX, centerY), so the max bbox dimension × 1.2 fits both axes.
+    let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+    for (const room of converted) {
+      for (const p of room.points) {
+        if (p.x < bMinX) bMinX = p.x;
+        if (p.y < bMinY) bMinY = p.y;
+        if (p.x > bMaxX) bMaxX = p.x;
+        if (p.y > bMaxY) bMaxY = p.y;
+      }
+    }
+    const span = Math.max(bMaxX - bMinX, bMaxY - bMinY);
+    setTransform({
+      metresAcross: Math.min(90, Math.max(8, span * 1.2)),
+      centerX: (bMinX + bMaxX) / 2,
+      centerY: (bMinY + bMaxY) / 2,
+    });
+
+    // 5. Auto-furnish with the freshly converted rooms (avoids stale closures).
+    //    A furnishing failure must not break the load itself.
+    try {
+      doFurnish(converted, nextConfig);
+    } catch (error) {
+      setFurnishedRooms([]);
+      setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
+    }
+  }
+
   function handleUploadClick() {
     fileInputRef.current?.click();
   }
@@ -2143,6 +2228,7 @@ export default function App() {
         onImageSelect={selectBackgroundImage}
         onImageDelete={deleteBackgroundImage}
         onImageUpdate={updateBackgroundImage}
+        onLoadDatasetApartment={handleLoadDatasetApartment}
         showTransitionAreas={showTransitionAreas}
         onToggleTransitionAreas={() => setShowTransitionAreas((v) => !v)}
       />

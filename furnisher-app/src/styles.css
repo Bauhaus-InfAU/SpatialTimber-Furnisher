@@ -2238,3 +2238,240 @@ button {
   opacity: 0;
   pointer-events: none;
 }
+
+/* ─── Dataset browser (Neufert bundle) ───────────────────────────────────────── */
+
+.nf-error {
+  margin-top: 6px;
+}
+
+.nf-loaded-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.nf-loaded-note .mono {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.nf-source {
+  color: var(--text-muted);
+}
+
+.nf-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nf-size-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.nf-size-btn {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--st-r-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: var(--st-mono);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.nf-size-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.nf-size-btn.active {
+  background: var(--sel);
+  border-color: var(--sel);
+  color: var(--st-oat);
+}
+
+.nf-num-input {
+  width: 52px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-sm);
+  background: var(--bg-card);
+  font-family: var(--st-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  outline: none;
+  text-align: right;
+}
+
+.nf-num-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--clay-tint);
+}
+
+.nf-range-sep {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.nf-unit {
+  font-family: var(--st-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.nf-select {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-sm);
+  background: var(--bg-card);
+  font-family: var(--st-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.nf-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--clay-tint);
+}
+
+.nf-match-count {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.nf-match-count .mono {
+  font-weight: 600;
+}
+
+.nf-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nf-index-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.nf-index-input {
+  width: 52px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--st-r-sm);
+  background: var(--bg-card);
+  font-family: var(--st-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  outline: none;
+  text-align: right;
+}
+
+.nf-index-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--clay-tint);
+}
+
+.nf-index-total {
+  font-family: var(--st-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.nf-random-btn {
+  height: 26px;
+  padding: 0 10px;
+  margin-left: auto;
+  border-radius: var(--st-r-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  transition: color 120ms, border-color 120ms;
+}
+
+.nf-random-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.nf-goto-row .nf-goto-input {
+  width: 100%;
+}
+
+.nf-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--st-r-md);
+  background: var(--bg-card);
+}
+
+.nf-card-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--st-mono);
+  font-size: 11.5px;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: copy;
+}
+
+.nf-card-id:hover {
+  color: var(--accent);
+}
+
+.nf-copied {
+  font-family: var(--st-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  background: var(--clay-tint);
+  border-radius: var(--st-r-pill);
+  padding: 1px 7px;
+}
+
+.nf-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.nf-card-stat b {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.nf-card-warn {
+  font-size: 11px;
+  color: var(--accent-deep);
+}

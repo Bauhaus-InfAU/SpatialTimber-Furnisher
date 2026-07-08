@@ -4,6 +4,8 @@ import { ROOM_TOOLS } from "./types";
 import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef } from "./types";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
+import { NeufertBrowser } from "./NeufertBrowser";
+import type { NeufertRecord } from "./NeufertBrowser";
 
 type SidebarProps = {
   rooms: DrawnRoom[];
@@ -28,6 +30,7 @@ type SidebarProps = {
   onImageSelect: (id: string) => void;
   onImageDelete: (id: string) => void;
   onImageUpdate: (id: string, patch: Partial<BackgroundImage>) => void;
+  onLoadDatasetApartment: (record: NeufertRecord) => void;
 };
 
 // ─── Pipeline step card ───────────────────────────────────────────────────────
@@ -562,6 +565,7 @@ export function Sidebar({
   showTransitionAreas, onToggleTransitionAreas,
   onSetDrawMode, onToggleOrtho, onSetAptType, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
+  onLoadDatasetApartment,
 }: SidebarProps) {
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
 
@@ -621,6 +625,9 @@ export function Sidebar({
 
       <div className="pipeline-steps">
         <div className="pipeline-steps-frame">
+        {/* ── Dataset browser (optional) ── */}
+        <NeufertBrowser onLoadApartment={onLoadDatasetApartment} />
+
         {/* ── 01 Add plan ── */}
         <PipelineStep
           number="01"
