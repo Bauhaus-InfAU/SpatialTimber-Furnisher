@@ -1,5 +1,7 @@
-// Bundles the TypeScript furnisher-engine + this CLI into a single self-contained
-// CommonJS file that the Grasshopper plugin can run with `node furnisher-cli.cjs`.
+// Bundles the TypeScript furnisher-engine + this CLI into self-contained
+// CommonJS files:
+//   dist/furnisher-cli.cjs   — stdin/stdout bridge run by the Grasshopper plugin
+//   dist/furnisher-batch.cjs — JSONL batch runner for dataset sweeps
 //
 // The engine's loader.ts uses Vite's `import md from "file.md?raw"` syntax to pull
 // placement_order.md in as a string. esbuild doesn't understand the `?raw` suffix,
@@ -27,16 +29,22 @@ const rawMarkdownPlugin = {
   },
 };
 
-await build({
-  entryPoints: [resolve(here, "src/cli.ts")],
-  bundle: true,
-  platform: "node",
-  target: "node18",
-  format: "cjs",
-  outfile: resolve(here, "dist/furnisher-cli.cjs"),
-  plugins: [rawMarkdownPlugin],
-  loader: { ".json": "json" },
-  logLevel: "info",
-});
+const bundles = [
+  { entry: "src/cli.ts",   outfile: "dist/furnisher-cli.cjs" },
+  { entry: "src/batch.ts", outfile: "dist/furnisher-batch.cjs" },
+];
 
-console.log("Built dist/furnisher-cli.cjs");
+for (const { entry, outfile } of bundles) {
+  await build({
+    entryPoints: [resolve(here, entry)],
+    bundle: true,
+    platform: "node",
+    target: "node18",
+    format: "cjs",
+    outfile: resolve(here, outfile),
+    plugins: [rawMarkdownPlugin],
+    loader: { ".json": "json" },
+    logLevel: "info",
+  });
+  console.log(`Built ${outfile}`);
+}

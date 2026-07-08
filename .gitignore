@@ -47,3 +47,7 @@ Thumbs.db
 # Claude Code files
 .claude/
 CLAUDE.md
+
+# Neufert dataset + benchmark outputs (large, local only)
+neufert swiss dataset/
+neufert-benchmark/out/
