@@ -10,7 +10,7 @@ import { defaultLibrary, defaultPipeline } from "../library/loader";
 import { roomNameToCategory, findFurnitureByName } from "../library/lookup";
 import type { PlacementOptions } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
-import { placeFurniture, getAllPlacements, getDoorRectangles } from "./placer";
+import { placeFurniture, getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
 import { subtractPolygon } from "./subtraction";
 
 export type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions };
@@ -41,6 +41,7 @@ export function runRoomPipeline(
   aptType: number,
   opts?: { library?: FurnitureLibrary; pipeline?: Pipeline },
 ): PipelineResult {
+  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
   const pipeline = opts?.pipeline  ?? defaultPipeline;
   const section  = roomNameToSection(room.name);
@@ -112,6 +113,7 @@ export function runRoomPipelineAt(
   selectedIndices: number[],
   opts?: { library?: FurnitureLibrary; pipeline?: Pipeline },
 ): PipelineWithOptions {
+  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
   const pipeline = opts?.pipeline  ?? defaultPipeline;
   const section  = roomNameToSection(room.name);

@@ -919,11 +919,15 @@ function EdgeEditor({
   // capture keeps every event of a given drag on the element that started it,
   // so a drag never spans the two layers.
   if (layer === "body") {
+    // Background layer (BELOW furniture): the room-body translate surface, the
+    // outline, and the WIDE (0.3 m) edge hit-areas. These must sit below the
+    // furniture layer — otherwise the wide hit-bands along the walls swallow
+    // clicks on furniture placed against those walls (and a click there would
+    // insert a vertex, wiping the room's furniture). Only the small grab
+    // handles go in the foreground layer so a vertex under a piece stays
+    // grabbable without blocking furniture selection.
     return (
       <g className="edge-editor">
-        {/* Whole-room body drag surface — sits below FurnitureHandles. Only the
-            interior fill translates the room; furniture glyphs above are
-            unaffected. */}
         <path
           className="room-body-drag"
           d={pointsToPath(room.points, true)}
@@ -933,28 +937,26 @@ function EdgeEditor({
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
         />
+        <path className="edge-editor-outline" d={pointsToPath(room.points, true)} stroke={room.color} />
+        {/* Invisible wide hit-areas — click anywhere on an edge to add a vertex */}
+        {room.points.map((_, i) => {
+          const a = room.points[i];
+          const b = room.points[(i + 1) % room.points.length];
+          return (
+            <line
+              key={`hit-${i}`}
+              className="edge-hit-area"
+              x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+              onClick={(e) => handleEdgeClick(e, i)}
+            />
+          );
+        })}
       </g>
     );
   }
 
   return (
     <g className="edge-editor">
-      <path className="edge-editor-outline" d={pointsToPath(room.points, true)} stroke={room.color} />
-
-      {/* Invisible wide hit-areas — click anywhere on an edge to add a vertex */}
-      {room.points.map((_, i) => {
-        const a = room.points[i];
-        const b = room.points[(i + 1) % room.points.length];
-        return (
-          <line
-            key={`hit-${i}`}
-            className="edge-hit-area"
-            x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            onClick={(e) => handleEdgeClick(e, i)}
-          />
-        );
-      })}
-
       {/* Edge midpoint handles */}
       {room.points.map((_, i) => {
         const a = room.points[i];

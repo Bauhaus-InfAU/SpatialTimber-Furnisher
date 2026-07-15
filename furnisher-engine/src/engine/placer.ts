@@ -76,6 +76,53 @@ function pointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
   return inside;
 }
 
+// ─── Polygon simplification (strip CAD/model noise) ──────────────────────────
+//
+// Dataset (and traced) room polygons carry model noise: sub-decimetre spur
+// edges and tiny notches left by wall-thickness modelling. These are 90° turns
+// (so plain collinear-removal misses them) yet they fragment a wall into short
+// pieces and invent fake corners with ~0.1 m arms — which defeats corner-based
+// furniture placement even in a visually rectangular room. We therefore:
+//   1. collapse any edge shorter than `minEdge` (merge its endpoints), then
+//   2. drop vertices whose perpendicular deviation from their neighbours is
+//      below `collinearTol`.
+// Both loops stop at a quad so a genuine rectangle can never be over-collapsed.
+export function simplifyPolygon(
+  poly: Point2D[],
+  minEdge = 0.15,
+  collinearTol = 0.02,
+): Point2D[] {
+  if (poly.length < 4) return poly;
+  let pts: Point2D[] = poly.map((p) => [p[0], p[1]]);
+
+  let changed = true;
+  while (changed && pts.length > 4) {
+    changed = false;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < minEdge) {
+        pts[i] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        pts.splice((i + 1) % pts.length, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  changed = true;
+  while (changed && pts.length > 4) {
+    changed = false;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length], b = pts[i], c = pts[(i + 1) % pts.length];
+      const cross = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]));
+      const base = Math.hypot(c[0] - a[0], c[1] - a[1]) || 1;
+      if (cross / base < collinearTol) { pts.splice(i, 1); changed = true; break; }
+    }
+  }
+
+  return pts.length >= 3 ? pts : poly;
+}
+
 // ─── Ray → polygon-edge intersection ─────────────────────────────────────────
 
 /**
@@ -473,6 +520,21 @@ function mirrorVariant(variant: FurnitureVariant): FurnitureVariant {
     mirrored = [...pts].reverse() as Point2D[];
   }
   return { ...variant, linePlacement: { points: mirrored } };
+}
+
+/**
+ * Straight-wall variant of a corner (L) piece: guiding line = the longer arm,
+ * so placeLineVariant runs the counter's main arm along a single wall with the
+ * short return arm turning inward. Lets an L-counter place against a plain wall
+ * when no room corner fits it (rigidly) — the "fits along the other wall" case.
+ */
+function makeStraightVariant(variant: FurnitureVariant): FurnitureVariant {
+  const pts = variant.linePlacement.points;
+  if (pts.length < 3) return variant;
+  const corner = pts[1] as Point2D;
+  const a1 = pts[0] as Point2D, a2 = pts[2] as Point2D;
+  const mainEnd = segmentLength(corner, a2) >= segmentLength(corner, a1) ? a2 : a1;
+  return { ...variant, linePlacement: { points: [corner, mainEnd] } };
 }
 
 /** Footprint signature for de-duplication (cm precision, order-independent). */
@@ -1014,9 +1076,18 @@ export function getAllPlacements(
 
   const placeOne = (variant: FurnitureVariant, vi: number): PlacementOption[] => {
     if (isCornerVariant(variant)) {
-      return isKitchen && KITCHEN_BEND_ON_ANGLED_CORNERS
-        ? placeKitchenVariant(room, entry, variant, vi)
-        : placeCornerVariant(room, entry, variant, vi, opts);
+      if (isKitchen && KITCHEN_BEND_ON_ANGLED_CORNERS) {
+        return placeKitchenVariant(room, entry, variant, vi);
+      }
+      // Rigid corner placement first; for kitchens, also allow the counter to
+      // run along a single straight wall (corner-or-straight) so an L-counter
+      // still places when no room corner fits it rigidly.
+      const cornerOpts = placeCornerVariant(room, entry, variant, vi, opts);
+      if (isKitchen) {
+        const straightOpts = placeLineVariant(room, entry, makeStraightVariant(variant), vi, opts);
+        return [...cornerOpts, ...straightOpts];
+      }
+      return cornerOpts;
     }
     return placeLineVariant(room, entry, variant, vi, opts);
   };

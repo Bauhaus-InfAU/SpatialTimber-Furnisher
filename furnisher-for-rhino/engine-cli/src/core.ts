@@ -8,7 +8,7 @@
 // runtime. Callers should silence console.log/debug/info before invoking
 // processRequest if stdout is their JSON channel.
 
-import { getAllPlacements, getDoorRectangles, doorWidth, subtractPolygon } from "../../../furnisher-engine/src/engine/index";
+import { getAllPlacements, getDoorRectangles, doorWidth, subtractPolygon, simplifyPolygon as engineSimplify } from "../../../furnisher-engine/src/engine/index";
 import { scoreRoom } from "../../../furnisher-engine/src/engine/scorer";
 import { defaultLibrary, defaultPipeline } from "../../../furnisher-engine/src/library/loader";
 import { findFurnitureByName, roomNameToCategory } from "../../../furnisher-engine/src/library/lookup";
@@ -152,9 +152,11 @@ function simplifyPolygon(pts: Point2D[], minEdge = 0.005, collinearTol = 0.002):
   return out.length >= 3 ? out : pts;
 }
 
-/** Engine wants CCW winding. */
+/** Engine wants CCW winding. Also strips CAD/model noise (sub-decimetre spur
+ *  edges and tiny notches) via the engine's shared simplifier, so a visually
+ *  rectangular room isn't left with fake ~0.1 m corners that defeat placement. */
 function normalizePolygon(pts: Point2D[]): Point2D[] {
-  const s = simplifyPolygon(pts);
+  const s = engineSimplify(simplifyPolygon(pts));
   return polygonSignedArea(s) < 0 ? [...s].reverse() : s;
 }
 
