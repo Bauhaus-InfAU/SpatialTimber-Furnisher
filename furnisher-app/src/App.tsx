@@ -33,7 +33,14 @@ type ViewerTransform = {
 
 type EdgeDragState =
   | { kind: "edge"; edgeIndex: number; normal: Point2D; startWorld: Point2D; originalPoints: Point2D[] }
-  | { kind: "vertex"; vertexIndex: number; startWorld: Point2D; originalPoints: Point2D[] };
+  | { kind: "vertex"; vertexIndex: number; startWorld: Point2D; originalPoints: Point2D[] }
+  | {
+      kind: "body";
+      startWorld: Point2D;
+      originalPoints: Point2D[];
+      originalDoors: Point2D[];
+      originalWindows: Point2D[];
+    };
 
 /** Collect all vertices that lie on the same straight wall as the given edge.
  *  Walks backward and forward along consecutive collinear segments. */
@@ -309,6 +316,45 @@ function distPointToPolygonBoundary(pt: Point2D, polygon: Point2D[]): number {
   return min;
 }
 
+// ─── Shared-door display ownership ─────────────────────────────────────────────
+// When a physical door sits on a wall between two rooms, both rooms may carry a
+// door point for it (esp. dataset apartments). To avoid drawing the swing twice
+// in the normal view, exactly one room "owns" the drawing, chosen by room type.
+// Higher priority (lower index) wins; ties broken deterministically by room id.
+const ROOM_DOOR_PRIORITY: RoomToolId[] = ["Bedroom", "Living room", "Kitchen", "Bathroom", "WC", "Children"];
+
+function roomDoorPriority(type: RoomToolId): number {
+  const i = ROOM_DOOR_PRIORITY.indexOf(type);
+  return i === -1 ? ROOM_DOOR_PRIORITY.length : i;
+}
+
+/** For every room, a boolean per door point: true if this room should paint that
+ *  door's swing in the normal (non-transition) view. A door shared with another
+ *  room (door point within ADJACENT_DOOR_THRESHOLD) is owned by the single
+ *  highest-priority room among the sharers; unshared doors are always owned. */
+function computeDoorOwnership(rooms: DrawnRoom[]): Map<string, boolean[]> {
+  const ownership = new Map<string, boolean[]>();
+  for (const room of rooms) {
+    const owned = room.doors.map((door) => {
+      let bestType = roomDoorPriority(room.type);
+      let bestId = room.id;
+      for (const other of rooms) {
+        if (other.id === room.id) continue;
+        const shares = other.doors.some((od) => distance(od, door) <= ADJACENT_DOOR_THRESHOLD);
+        if (!shares) continue;
+        const otherType = roomDoorPriority(other.type);
+        if (otherType < bestType || (otherType === bestType && other.id < bestId)) {
+          bestType = otherType;
+          bestId = other.id;
+        }
+      }
+      return bestId === room.id;
+    });
+    ownership.set(room.id, owned);
+  }
+  return ownership;
+}
+
 function toEngineRooms(rooms: DrawnRoom[]) {
   let childIndex = 0;
   return rooms.map((room) => {
@@ -370,6 +416,19 @@ function dedupeRooms(rooms: DrawnRoom[]) {
     seen.add(fp);
     return true;
   });
+}
+
+// Stable string describing everything that affects a furnish result: room
+// identity, type, and rounded geometry (points/doors/windows) plus the pipeline
+// config. Deliberately EXCLUDES furnishedRooms so writing furniture cannot
+// re-trigger the auto-furnish effect (which would loop).
+function computeLayoutSignature(rooms: DrawnRoom[], config: PipelineConfig): string {
+  const r = (n: number) => n.toFixed(2);
+  const pts = (list: Point2D[]) => list.map((p) => `${r(p.x)},${r(p.y)}`).join("|");
+  const roomsSig = rooms
+    .map((room) => `${room.id}:${room.type}:${pts(room.points)}:${pts(room.doors)}:${pts(room.windows)}`)
+    .join(";");
+  return `${roomsSig}#${JSON.stringify(config)}`;
 }
 
 // ─── Pipeline builder helpers ─────────────────────────────────────────────────
@@ -624,10 +683,12 @@ function EdgeEditor({
   room,
   svgRef,
   onUpdate,
+  onMoveRoom,
 }: {
   room: DrawnRoom;
   svgRef: React.RefObject<SVGSVGElement | null>;
   onUpdate: (roomId: string, points: Point2D[]) => void;
+  onMoveRoom: (roomId: string, points: Point2D[], doors: Point2D[], windows: Point2D[]) => void;
 }) {
   const [dragState, setDragState] = useState<EdgeDragState | null>(null);
 
@@ -667,12 +728,41 @@ function EdgeEditor({
     setDragState({ kind: "vertex", vertexIndex, startWorld: world, originalPoints: [...room.points] });
   }
 
+  // ── Whole-room body drag (translate points + doors + windows) ───────────────
+
+  function handleBodyPointerDown(event: PointerEvent<SVGPathElement>) {
+    event.stopPropagation();
+    const world = worldPoint(event.clientX, event.clientY);
+    if (!world) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({
+      kind: "body",
+      startWorld: world,
+      originalPoints: [...room.points],
+      originalDoors: [...room.doors],
+      originalWindows: [...room.windows],
+    });
+  }
+
   // ── Shared move / up ───────────────────────────────────────────────────────
 
-  function handlePointerMove(event: PointerEvent<SVGCircleElement>) {
+  function handlePointerMove(event: PointerEvent<SVGElement>) {
     if (!dragState) return;
     const world = worldPoint(event.clientX, event.clientY);
     if (!world) return;
+
+    if (dragState.kind === "body") {
+      const dx = world.x - dragState.startWorld.x;
+      const dy = world.y - dragState.startWorld.y;
+      const shift = (p: Point2D): Point2D => ({ x: p.x + dx, y: p.y + dy });
+      onMoveRoom(
+        room.id,
+        dragState.originalPoints.map(shift),
+        dragState.originalDoors.map(shift),
+        dragState.originalWindows.map(shift),
+      );
+      return;
+    }
 
     if (dragState.kind === "edge") {
       const offset =
@@ -717,7 +807,7 @@ function EdgeEditor({
     }
   }
 
-  function handlePointerUp(event: PointerEvent<SVGCircleElement>) {
+  function handlePointerUp(event: PointerEvent<SVGElement>) {
     event.currentTarget.releasePointerCapture(event.pointerId);
     setDragState(null);
   }
@@ -749,6 +839,20 @@ function EdgeEditor({
 
   return (
     <g className="edge-editor">
+      {/* Whole-room body drag surface — rendered first so edge hit-areas and
+          vertex/edge handles paint on top and keep their own behaviour. Only
+          the interior fill translates the room; the swing-free glyphs on top
+          are unaffected. */}
+      <path
+        className="room-body-drag"
+        d={pointsToPath(room.points, true)}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={handleBodyPointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      />
+
       <path className="edge-editor-outline" d={pointsToPath(room.points, true)} stroke={room.color} />
 
       {/* Invisible wide hit-areas — click anywhere on an edge to add a vertex */}
@@ -860,11 +964,23 @@ function FurniturePreview({ pieces }: { pieces: PlacedFurniture[] }) {
   );
 }
 
-function DoorSwing({ room }: { room: DrawnRoom }) {
+function DoorSwing({
+  room,
+  ownedDoors,
+  showAll,
+}: {
+  room: DrawnRoom;
+  ownedDoors: boolean[];
+  showAll: boolean;
+}) {
   if (!room.doors.length) return null;
   return (
     <>
       {room.doors.map((doorPoint, i) => {
+        // Normal view: only the owning room draws a shared door (once).
+        // Transition-zones view: every room draws its own clearance so both
+        // sides of a shared door are visible.
+        if (!showAll && !ownedDoors[i]) return null;
         const geometry = getDoorSwingGeometry(room, doorPoint);
         if (!geometry) return null;
         const { arcEnd, hinge, panelEnd, radius, sweepFlag } = geometry;
@@ -939,6 +1055,7 @@ function RoomLayer({
   rooms,
   selectedRoomId,
   selectable,
+  showTransitionAreas,
   onSelectRoom,
 }: {
   draft: RoomDraft | null;
@@ -947,9 +1064,11 @@ function RoomLayer({
   rooms: DrawnRoom[];
   selectedRoomId: string | null;
   selectable: boolean;
+  showTransitionAreas: boolean;
   onSelectRoom: (id: string) => void;
 }) {
   const furnishedByRoomId = new Map(furnishedRooms.map((r) => [r.roomId, r]));
+  const doorOwnership = useMemo(() => computeDoorOwnership(rooms), [rooms]);
 
   const isRectPreview =
     drawMode === "rectangle" &&
@@ -984,7 +1103,11 @@ function RoomLayer({
             <circle key={`${room.id}-v${index}`} cx={point.x} cy={point.y} r="0.09" stroke={room.color} />
           ))}
           <RoomLabel room={room} />
-          <DoorSwing room={room} />
+          <DoorSwing
+            room={room}
+            ownedDoors={doorOwnership.get(room.id) ?? []}
+            showAll={showTransitionAreas}
+          />
           <WindowDisplay room={room} />
           <FurniturePreview pieces={(furnishedByRoomId.get(room.id)?.steps ?? []).flatMap((s) => s.selected ? [s.selected.placed] : [])} />
         </g>
@@ -1208,6 +1331,7 @@ function ViewerLayer({
   onSelectRoom,
   onSelectFurniture,
   onUpdateRoom,
+  onMoveRoom,
   onFurnitureDrop,
   onPan,
   showTransitionAreas,
@@ -1233,6 +1357,7 @@ function ViewerLayer({
   onSelectRoom: (id: string | null) => void;
   onSelectFurniture: (key: FurnitureKey | null) => void;
   onUpdateRoom: (roomId: string, points: Point2D[]) => void;
+  onMoveRoom: (roomId: string, points: Point2D[], doors: Point2D[], windows: Point2D[]) => void;
   onFurnitureDrop: (roomId: string, stepIdx: number, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
   onPan: (cx: number, cy: number) => void;
   showTransitionAreas: boolean;
@@ -1427,10 +1552,11 @@ function ViewerLayer({
         rooms={rooms}
         selectedRoomId={selectedRoomId}
         selectable={selectable}
+        showTransitionAreas={showTransitionAreas}
         onSelectRoom={onSelectRoom}
       />
       {selectedRoom && selectable ? (
-        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} />
+        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} />
       ) : null}
       <FurnitureHandles
         rooms={rooms}
@@ -1615,6 +1741,11 @@ export default function App() {
   const [orthoMode, setOrthoMode] = useState(true);
   const [furnishedRooms, setFurnishedRooms] = useState<FurnishedRoomResult[]>([]);
   const [furnishError, setFurnishError] = useState<string | null>(null);
+  // Feature B: once the user has furnished once, layout edits auto-re-furnish.
+  const [hasFurnishedOnce, setHasFurnishedOnce] = useState(false);
+  // Signature of the layout last furnished — guards the auto-furnish effect
+  // against redundant runs right after a manual/dataset furnish.
+  const lastFurnishedSignatureRef = useRef<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig>({
     aptTypeOverride: null,
@@ -1639,6 +1770,33 @@ export default function App() {
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // Feature B: auto-furnish on layout changes after the first manual furnish.
+  // The signature captures only layout inputs (rooms + pipelineConfig), never
+  // furnishedRooms, so furnishing can't re-trigger this effect → no loop.
+  const layoutSignature = useMemo(
+    () => computeLayoutSignature(rooms, pipelineConfig),
+    [rooms, pipelineConfig],
+  );
+
+  useEffect(() => {
+    if (!hasFurnishedOnce || rooms.length === 0) return;
+    // Already furnished exactly this layout (e.g. just after a manual furnish).
+    if (layoutSignature === lastFurnishedSignatureRef.current) return;
+    // Debounce so dragging a vertex/room (many updates) furnishes once, at rest.
+    const handle = window.setTimeout(() => {
+      try {
+        const deduped = dedupeRooms(rooms);
+        doFurnish(deduped, pipelineConfig);
+        lastFurnishedSignatureRef.current = layoutSignature;
+        setFurnishError(null);
+      } catch (error) {
+        setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
+      }
+    }, 350);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutSignature, hasFurnishedOnce]);
 
   function resetScaleCalibration() {
     setScaleCalibration({ p1: null, p2: null, cursor: null });
@@ -1872,6 +2030,18 @@ export default function App() {
     setFurnishedRooms((current) => current.filter((r) => r.roomId !== roomId));
   }
 
+  // Feature C: translate the whole room (points + doors + windows). Only updates
+  // room state (so the layout signature changes) — it never furnishes directly;
+  // Feature B's debounced effect re-furnishes once the drag settles.
+  function handleMoveRoom(roomId: string, newPoints: Point2D[], newDoors: Point2D[], newWindows: Point2D[]) {
+    setRooms((current) =>
+      current.map((room) =>
+        room.id === roomId ? { ...room, points: newPoints, doors: newDoors, windows: newWindows } : room,
+      ),
+    );
+    setFurnishedRooms((current) => current.filter((r) => r.roomId !== roomId));
+  }
+
   // Greedy best-first: for each step in sequence, try every available option
   // and commit to the one that gives the highest room score for the full pipeline.
   // Complexity: O(steps × options) pipeline runs — fast in practice for typical rooms.
@@ -1924,6 +2094,7 @@ export default function App() {
       }
     }
     setFurnishedRooms(results);
+    setHasFurnishedOnce(true);
   }
 
   function handleFurnishClick() {
@@ -1940,8 +2111,12 @@ export default function App() {
       return;
     }
 
-    if (rooms.length !== dedupeRooms(rooms).length) setRooms(dedupeRooms(rooms));
-    doFurnish(rooms, pipelineConfig);
+    const deduped = dedupeRooms(rooms);
+    if (rooms.length !== deduped.length) setRooms(deduped);
+    doFurnish(deduped, pipelineConfig);
+    // Prime the guard so the auto-furnish effect doesn't immediately re-run for
+    // the layout we just furnished.
+    lastFurnishedSignatureRef.current = computeLayoutSignature(deduped, pipelineConfig);
   }
 
   function handleSetAptType(type: number | null) {
@@ -2175,6 +2350,7 @@ export default function App() {
     //    A furnishing failure must not break the load itself.
     try {
       doFurnish(converted, nextConfig);
+      lastFurnishedSignatureRef.current = computeLayoutSignature(converted, nextConfig);
     } catch (error) {
       setFurnishedRooms([]);
       setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
@@ -2308,6 +2484,7 @@ export default function App() {
           onSelectRoom={setSelectedRoomId}
           onSelectFurniture={setSelectedFurnitureKey}
           onUpdateRoom={handleUpdateRoom}
+          onMoveRoom={handleMoveRoom}
           selectedFurnitureKey={selectedFurnitureKey}
           onFurnitureDrop={handleFurnitureDrop}
           onPan={(cx, cy) => setTransform((t) => ({ ...t, centerX: cx, centerY: cy }))}

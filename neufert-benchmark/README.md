@@ -34,8 +34,12 @@ cd ..\furnisher-for-rhino\engine-cli; npm install; npm run build; cd ..\..\neufe
 # 3. Run (single process ~100 min, or chunked in parallel with --offset/--limit)
 node ..\furnisher-for-rhino\engine-cli\dist\furnisher-batch.cjs out\requests.jsonl out\results_chunk0.jsonl
 
-# 4. Merge + flat score table
+# 4. Merge + flat score table + app bundle
 python merge_results.py
+
+# 5. Findings analysis + self-contained dashboard
+python analyze.py          # writes out/analysis.json
+python build_dashboard.py  # writes out/dashboard.html (open in any browser, works offline)
 ```
 
 ## What convert.py does

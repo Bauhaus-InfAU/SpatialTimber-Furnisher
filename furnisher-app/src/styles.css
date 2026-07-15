@@ -1514,11 +1514,22 @@ button {
 
 /* ─── Edge editor (room polygon editing) ──────────────────────────────────── */
 
+/* Whole-room drag surface: fills the selected room's interior so the body can
+   be grabbed and translated. Kept transparent — the room fill/labels show
+   through — but captures pointer events with a move cursor. */
+.room-body-drag {
+  fill: transparent;
+  stroke: none;
+  cursor: move;
+  pointer-events: fill;
+}
+
 .edge-editor-outline {
   fill: none;
   stroke-width: 3.5;
   stroke-opacity: 0.35;
   vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
 .edge-handle {
