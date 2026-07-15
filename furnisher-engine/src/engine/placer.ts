@@ -1004,9 +1004,17 @@ export function getAllPlacements(
 
   const isKitchen = entry.category === "Kitchen";
 
+  // Kitchen counters are placed RIGID, like every other piece of furniture:
+  // on a non-orthogonal corner we do NOT bend the counter to follow the two
+  // walls (which sheared the geometry and could push it outside the room).
+  // Rigid corner placement (placeCornerVariant) only accepts near-square
+  // corners and leaves a small gap on an angled wall — the accepted trade-off.
+  // The legacy wall-following L-counter placer is retained but disabled here.
+  const KITCHEN_BEND_ON_ANGLED_CORNERS = false;
+
   const placeOne = (variant: FurnitureVariant, vi: number): PlacementOption[] => {
     if (isCornerVariant(variant)) {
-      return isKitchen
+      return isKitchen && KITCHEN_BEND_ON_ANGLED_CORNERS
         ? placeKitchenVariant(room, entry, variant, vi)
         : placeCornerVariant(room, entry, variant, vi, opts);
     }
