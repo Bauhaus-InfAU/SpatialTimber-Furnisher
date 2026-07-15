@@ -1181,6 +1181,14 @@ button {
   pointer-events: none;
 }
 
+.furniture-drag-ghost-geom {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
 .furniture-snap-point {
   fill: var(--accent);
   stroke: none;
@@ -2554,4 +2562,16 @@ button {
   dominant-baseline: central;
   pointer-events: none;
   user-select: none;
+}
+
+.dataset-wall-layer {
+  pointer-events: none;
+}
+
+.dataset-wall {
+  fill: var(--st-ink-2);            /* dark warm grey — reads clearly as structure */
+  fill-opacity: 0.62;
+  stroke: var(--st-ink-2);
+  stroke-width: 0.01px;             /* world units (metres) — hairline seam */
+  stroke-opacity: 0.62;
 }

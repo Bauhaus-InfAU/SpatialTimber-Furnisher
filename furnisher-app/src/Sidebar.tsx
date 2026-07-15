@@ -25,6 +25,8 @@ type SidebarProps = {
   onToggleTransitionAreas: () => void;
   showFailedCandidates: boolean;
   onToggleFailedCandidates: () => void;
+  showWalls: boolean;
+  onToggleWalls: () => void;
   onSetDrawMode: (mode: "rectangle" | "lines") => void;
   onToggleOrtho: () => void;
   onSetAptType: (type: number | null) => void;
@@ -566,6 +568,7 @@ export function Sidebar({
   onSelectTool, onUploadClick, onReset, onFurnish,
   showTransitionAreas, onToggleTransitionAreas,
   showFailedCandidates, onToggleFailedCandidates,
+  showWalls, onToggleWalls,
   onSetDrawMode, onToggleOrtho, onSetAptType, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
   onLoadDatasetApartment,
@@ -628,6 +631,13 @@ export function Sidebar({
               onClick={onToggleFailedCandidates}
             >
               Failed pieces
+            </button>
+            <button
+              type="button"
+              className={`afford${showWalls ? " active" : ""}`}
+              onClick={onToggleWalls}
+            >
+              Walls
             </button>
           </div>
         )}

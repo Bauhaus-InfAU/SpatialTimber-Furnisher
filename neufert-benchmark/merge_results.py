@@ -130,6 +130,17 @@ def main():
 
     # 5. App bundle: one line per unique apartment, geometry + metadata.
     group_size = Counter(row["representative_bfa"] for row in index_rows)
+
+    # Optional wall geometry (display-only), keyed by bfa.
+    walls_by_id = {}
+    walls_file = os.path.join(OUT, "walls.jsonl")
+    if os.path.exists(walls_file):
+        with open(walls_file, encoding="utf-8") as wf:
+            for line in wf:
+                w = json.loads(line)
+                walls_by_id[w["id"]] = w.get("walls", [])
+    print(f"walls loaded for {len(walls_by_id)} apartments")
+
     bundle_path = os.path.join(OUT, "neufert_apartments.jsonl")
     n_bundle = 0
     with open(os.path.join(OUT, "requests.jsonl"), encoding="utf-8") as fin, \
@@ -161,6 +172,7 @@ def main():
                 "rooms": req["rooms"],
                 "doors": req["doors"],
                 "context": req.get("context", []),
+                "walls": walls_by_id.get(bfa, []),
                 "meta": {
                     "score": score,
                     "aptType": (r or {}).get("aptType"),

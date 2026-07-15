@@ -32,6 +32,8 @@ export type NeufertRecord = {
   doors?: [number, number][];
   /** Non-furnishable areas (corridors etc.) — display-only. Missing on old bundles. */
   context?: NeufertContextArea[];
+  /** Wall thickness polygons (closed rings, metres, canonical frame) — display-only. Missing on old bundles. */
+  walls?: [number, number][][];
   meta?: NeufertMeta;
 };
 

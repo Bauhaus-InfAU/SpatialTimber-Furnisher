@@ -730,6 +730,23 @@ function DatasetContextLayer({ areas }: { areas: DatasetContextArea[] }) {
   );
 }
 
+// ─── Dataset walls (thickness polygons — display-only) ───────────────────────
+// Filled wall-thickness rings translated into the same frame as the rooms. Drawn
+// filled so real wall thickness — and the GAPS where two rooms meet with no wall
+// (open-plan) — read directly. Non-interactive (pointer-events:none) so it never
+// intercepts furniture/room/handle pointer events regardless of stacking order.
+
+function DatasetWallLayer({ walls }: { walls: Point2D[][] }) {
+  if (!walls.length) return null;
+  return (
+    <g className="dataset-wall-layer" style={{ pointerEvents: "none" }}>
+      {walls.map((ring, i) => (
+        <path key={i} className="dataset-wall" d={pointsToPath(ring, true)} />
+      ))}
+    </g>
+  );
+}
+
 // ─── EdgeEditor ───────────────────────────────────────────────────────────────
 
 function EdgeEditor({
@@ -737,11 +754,13 @@ function EdgeEditor({
   svgRef,
   onUpdate,
   onMoveRoom,
+  layer,
 }: {
   room: DrawnRoom;
   svgRef: React.RefObject<SVGSVGElement | null>;
   onUpdate: (roomId: string, points: Point2D[]) => void;
   onMoveRoom: (roomId: string, points: Point2D[], doors: Point2D[], windows: Point2D[]) => void;
+  layer: "body" | "handles";
 }) {
   const [dragState, setDragState] = useState<EdgeDragState | null>(null);
 
@@ -890,22 +909,36 @@ function EdgeEditor({
     ]);
   }
 
+  // The editor is split into two stacked layers so the room's edge/vertex
+  // handles can paint ABOVE the furniture layer (a vertex under a piece stays
+  // grabbable) while the room-body translate surface stays BELOW it (furniture
+  // remains selectable/draggable, empty floor still moves the room).
+  //   layer="body"    → background: only the .room-body-drag translate surface
+  //   layer="handles" → foreground: outline + edge hit-areas + edge/vertex handles
+  // Each layer keeps its own dragState, which is coherent because a pointer
+  // capture keeps every event of a given drag on the element that started it,
+  // so a drag never spans the two layers.
+  if (layer === "body") {
+    return (
+      <g className="edge-editor">
+        {/* Whole-room body drag surface — sits below FurnitureHandles. Only the
+            interior fill translates the room; furniture glyphs above are
+            unaffected. */}
+        <path
+          className="room-body-drag"
+          d={pointsToPath(room.points, true)}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={handleBodyPointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+        />
+      </g>
+    );
+  }
+
   return (
     <g className="edge-editor">
-      {/* Whole-room body drag surface — rendered first so edge hit-areas and
-          vertex/edge handles paint on top and keep their own behaviour. Only
-          the interior fill translates the room; the swing-free glyphs on top
-          are unaffected. */}
-      <path
-        className="room-body-drag"
-        d={pointsToPath(room.points, true)}
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={handleBodyPointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-      />
-
       <path className="edge-editor-outline" d={pointsToPath(room.points, true)} stroke={room.color} />
 
       {/* Invisible wide hit-areas — click anywhere on an edge to add a vertex */}
@@ -1358,6 +1391,13 @@ function FurnitureHandles({
                 return (
                   <>
                     <path d={pointsToPath(ghostPts, true)} className="furniture-drag-ghost" />
+                    {placed.transformedGeometry.map((geom, j) => (
+                      <path
+                        key={`ghost-geom-${j}`}
+                        d={pointsToPath(geom.points.map(([x, y]) => ({ x: x + dx, y: y + dy })), geom.closed)}
+                        className="furniture-drag-ghost-geom"
+                      />
+                    ))}
                     {snap && <circle cx={snap.point.x} cy={snap.point.y} r="0.09" className="furniture-snap-point" />}
                     {snap && (
                       <line x1={drag.cursor.x} y1={drag.cursor.y} x2={snap.point.x} y2={snap.point.y} className="furniture-drag-line" />
@@ -1468,6 +1508,13 @@ function FurnitureHandles({
               return (
                 <>
                   <path d={pointsToPath(ghostPts, true)} className="furniture-drag-ghost" />
+                  {c.placed.transformedGeometry.map((geom, j) => (
+                    <path
+                      key={`cand-ghost-geom-${j}`}
+                      d={pointsToPath(geom.points.map(([x, y]) => ({ x: x + dx, y: y + dy })), geom.closed)}
+                      className="furniture-drag-ghost-geom"
+                    />
+                  ))}
                   {snap && <circle cx={snap.point.x} cy={snap.point.y} r="0.09" className="furniture-snap-point" />}
                   {snap && (
                     <line x1={candDrag.cursor.x} y1={candDrag.cursor.y} x2={snap.point.x} y2={snap.point.y} className="furniture-drag-line" />
@@ -1496,6 +1543,8 @@ function ViewerLayer({
   transform,
   selectedFurnitureKey,
   datasetContext,
+  datasetWalls,
+  showWalls,
   onCalibrationClick,
   onCalibrationMove,
   onRoomClick,
@@ -1527,6 +1576,8 @@ function ViewerLayer({
   transform: ViewerTransform;
   selectedFurnitureKey: FurnitureKey | null;
   datasetContext: DatasetContextArea[];
+  datasetWalls: Point2D[][];
+  showWalls: boolean;
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
   onRoomClick: (point: Point2D) => void;
@@ -1741,8 +1792,9 @@ function ViewerLayer({
         showTransitionAreas={showTransitionAreas}
         onSelectRoom={onSelectRoom}
       />
+      {showWalls ? <DatasetWallLayer walls={datasetWalls} /> : null}
       {selectedRoom && selectable ? (
-        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} />
+        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="body" />
       ) : null}
       <FurnitureHandles
         rooms={rooms}
@@ -1759,6 +1811,9 @@ function ViewerLayer({
         onSelectCandidate={onSelectCandidate}
         onCandidateDrop={onCandidateDrop}
       />
+      {selectedRoom && selectable ? (
+        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="handles" />
+      ) : null}
       {showTransitionAreas && (
         <g className="transition-areas-overlay" style={{ pointerEvents: "none" }}>
           {furnishedRooms.flatMap((rr) =>
@@ -1951,6 +2006,9 @@ export default function App() {
   const [selectedCandidateKey, setSelectedCandidateKey] = useState<FurnitureKey | null>(null);
   // Non-furnishable areas (corridors, …) from a loaded dataset apartment — display-only.
   const [datasetContext, setDatasetContext] = useState<DatasetContextArea[]>([]);
+  // Wall thickness polygons from a loaded dataset apartment — display-only. Shown by default.
+  const [datasetWalls, setDatasetWalls] = useState<Point2D[][]>([]);
+  const [showWalls, setShowWalls] = useState(true);
 
   // Non-passive wheel listener so preventDefault actually works and prevents browser zoom
   useEffect(() => {
@@ -2029,6 +2087,7 @@ export default function App() {
     setFurnishError(null);
     setSelectedRoomId(null);
     setDatasetContext([]);
+    setDatasetWalls([]);
     setSelectedTool("upload");
   }
 
@@ -2509,11 +2568,18 @@ export default function App() {
         points: c.polygon.map(translate),
       }));
 
+    // Wall thickness polygons, translated with the SAME room-derived offset so
+    // they align exactly with the rooms. Rings with < 3 points are dropped.
+    const wallRings: Point2D[][] = (record.walls ?? [])
+      .filter((ring) => Array.isArray(ring) && ring.length >= 3)
+      .map((ring) => ring.map(translate));
+
     // 3. Replace the drawing state (background images are left untouched).
     resetScaleCalibration();
     resetRoomDraft();
     setRooms(converted);
     setDatasetContext(contextAreas);
+    setDatasetWalls(wallRings);
     setFurnishedRooms([]);
     setSelectedRoomId(null);
     setSelectedFurnitureKey(null);
@@ -2525,9 +2591,10 @@ export default function App() {
     // 4. Fit the viewer: centre the apartment with ~10% margin on each side.
     //    The SVG viewBox is a square `metresAcross` wide centred on
     //    (centerX, centerY), so the max bbox dimension × 1.2 fits both axes.
-    //    Context areas are included so corridors aren't clipped offscreen.
+    //    Context areas and walls are included so corridors and exterior walls
+    //    aren't clipped offscreen.
     let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
-    const fitPointLists = [...converted.map((r) => r.points), ...contextAreas.map((c) => c.points)];
+    const fitPointLists = [...converted.map((r) => r.points), ...contextAreas.map((c) => c.points), ...wallRings];
     for (const points of fitPointLists) {
       for (const p of points) {
         if (p.x < bMinX) bMinX = p.x;
@@ -2740,6 +2807,8 @@ export default function App() {
         onToggleTransitionAreas={() => setShowTransitionAreas((v) => !v)}
         showFailedCandidates={showFailedCandidates}
         onToggleFailedCandidates={() => setShowFailedCandidates((v) => !v)}
+        showWalls={showWalls}
+        onToggleWalls={() => setShowWalls((v) => !v)}
       />
 
       <section
@@ -2759,6 +2828,8 @@ export default function App() {
           drawMode={drawMode}
           transform={transform}
           datasetContext={datasetContext}
+          datasetWalls={datasetWalls}
+          showWalls={showWalls}
           onCalibrationClick={handleScaleCalibrationClick}
           onCalibrationMove={(p) => setScaleCalibration((c) => (c.p1 ? { ...c, cursor: p } : c))}
           onDoorClick={handleDoorClick}

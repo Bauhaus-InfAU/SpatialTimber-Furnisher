@@ -49,6 +49,9 @@ DOOR_SUBTYPES = {"DOOR", "ENTRANCE_DOOR"}
 # Not furnishable, but carried through as display-only context so apartments
 # don't render as floating rooms in the app.
 CONTEXT_SUBTYPES = {"CORRIDOR"}
+# Structural separators drawn (display-only) so open-plan gaps between rooms
+# (e.g. no wall between kitchen and living) are visible. Thickness polygons.
+STRUCTURE_SUBTYPES = {"WALL"}
 
 DOOR_ASSIGN_DIST = 0.4   # must match engine-cli ADJACENT_DOOR_THRESHOLD
 WINDOW_ASSIGN_DIST = 0.5 # exterior walls are thicker
@@ -302,6 +305,19 @@ def process_apartment(bfa, ent, stats):
             "polygon": [[round(x, 3), round(y, 3)] for x, y in map(rot, poly)],
         })
 
+    # Display-only wall thickness polygons: same frame, cm precision. NOT cleaned
+    # (walls are thin — clean_polygon's area floor would drop them) and never sent
+    # to the engine. Lets the user see open-plan gaps between rooms.
+    walls = []
+    for wkt in ent["walls"]:
+        pts, _ = parse_wkt_polygon(wkt)
+        if not pts or len(pts) < 3:
+            continue
+        pts = dedupe_vertices(pts)
+        if len(pts) < 3:
+            continue
+        walls.append([[round(x, 2), round(y, 2)] for x, y in map(rot, pts)])
+
     # Rotation/translation-invariant duplicate signature.
     sig_src = json.dumps(
         sorted((r["name"], edge_lengths(
@@ -318,6 +334,7 @@ def process_apartment(bfa, ent, stats):
         "rooms": rooms,
         "doors": doors,
         "context": context,
+        "walls": walls,
         "rotation": rotation,
         "signature": sig,
         "notes": notes,
@@ -338,8 +355,8 @@ def main():
     csv.field_size_limit(10_000_000)
 
     apartments = defaultdict(lambda: {
-        "areas": [], "context": [], "bath_features": [], "doors": [], "windows": [],
-        "meta": {}, "skipped": Counter(),
+        "areas": [], "context": [], "walls": [], "bath_features": [], "doors": [],
+        "windows": [], "meta": {}, "skipped": Counter(),
     })
     stats = Counter()
 
@@ -377,6 +394,8 @@ def main():
                 pts, _ = parse_wkt_polygon(row["geometry"])
                 if pts:
                     ent["windows"].append(centroid(pts))
+            elif et == "separator" and st in STRUCTURE_SUBTYPES:
+                ent["walls"].append(row["geometry"])
 
     print(f"    {len(apartments)} apartments with entities", flush=True)
 
@@ -399,7 +418,9 @@ def main():
     representative = {sig: ids[0] for sig, ids in groups.items()}
 
     req_path = os.path.join(args.out, "requests.jsonl")
-    with open(req_path, "w", encoding="utf-8") as f:
+    walls_path = os.path.join(args.out, "walls.jsonl")
+    with open(req_path, "w", encoding="utf-8") as f, \
+         open(walls_path, "w", encoding="utf-8") as fw:
         for rec in converted:
             if representative[rec["signature"]] != rec["id"]:
                 continue
@@ -410,6 +431,9 @@ def main():
                 "doors": rec["doors"],
                 "context": rec["context"],
             }, separators=(",", ":")) + "\n")
+            # walls kept separate so the engine-input file stays lean
+            fw.write(json.dumps({"id": rec["id"], "walls": rec["walls"]},
+                                 separators=(",", ":")) + "\n")
 
     idx_path = os.path.join(args.out, "apartments_index.csv")
     name_keys = ["Living room", "Kitchen", "Bathroom", "WC", "Bedroom", "Children"]
