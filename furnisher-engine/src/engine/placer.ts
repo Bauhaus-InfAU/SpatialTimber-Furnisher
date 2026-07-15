@@ -497,12 +497,39 @@ function dedupePlacements(options: PlacementOption[]): PlacementOption[] {
 }
 
 /** True if all points lie inside `poly` after a 1 % inset toward their centroid. */
+/**
+ * True when rectangle/footprint `pts` lies inside `poly`.
+ *
+ * A furniture footprint sits flush against a wall, so its wall-side edge is
+ * collinear with a room edge — a naive edge-intersection test would false-
+ * positive on that. We therefore pull every corner a fixed 3 cm toward the
+ * footprint centroid (lifting flush edges just off the boundary) and then
+ * require BOTH: every inset corner is inside, AND no inset edge crosses a room
+ * edge. The corner test alone (the old 1 %-inset version) missed footprints
+ * that poke a few cm past a *slanted* wall — corners looked inside while the
+ * body bulged out — which is exactly what produced furniture hanging outside
+ * non-orthogonal rooms.
+ */
 function insetInside(pts: Point2D[], poly: Point2D[]): boolean {
   const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
   const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-  return pts.every((p) =>
-    pointInPolygon([p[0] * 0.99 + cx * 0.01, p[1] * 0.99 + cy * 0.01], poly),
-  );
+  const MARGIN = 0.03; // metres
+  const inset = pts.map((p): Point2D => {
+    const dx = cx - p[0], dy = cy - p[1];
+    const l = Math.hypot(dx, dy);
+    if (l < 1e-9) return [p[0], p[1]];
+    const k = Math.min(MARGIN, l * 0.5) / l;
+    return [p[0] + dx * k, p[1] + dy * k];
+  });
+  if (!inset.every((p) => pointInPolygon(p, poly))) return false;
+  const m = inset.length;
+  for (let i = 0; i < m; i++) {
+    const a = inset[i], b = inset[(i + 1) % m];
+    for (let j = 0; j < poly.length; j++) {
+      if (segmentsIntersect(a, b, poly[j], poly[(j + 1) % poly.length])) return false;
+    }
+  }
+  return true;
 }
 
 // ─── Generic corner placement (non-kitchen corner-guideline pieces) ───────────
@@ -538,7 +565,15 @@ function placeCornerVariant(
   const arm1Len = segmentLength(cornerSrc, arm1EndSrc);
   const arm2Len = segmentLength(cornerSrc, arm2EndSrc);
 
-  const srcFrame: Frame2D = { origin: cornerSrc, xAxis: arm2Dir_src, yAxis: arm1Dir_src };
+  // Orthonormal source frame: x along arm2, y the true perpendicular toward arm1.
+  // (Using arm1 directly as y would shear the piece whenever the variant's own
+  //  guiding arms aren't exactly perpendicular.)
+  const srcYperp = perpCCW(arm2Dir_src);
+  const srcFrame: Frame2D = {
+    origin: cornerSrc,
+    xAxis: arm2Dir_src,
+    yAxis: dot(srcYperp, arm1Dir_src) >= 0 ? srcYperp : scalePt(srcYperp, -1),
+  };
 
   for (let i = 0; i < n; i++) {
     const cornerPt = polygon[i];
@@ -571,7 +606,17 @@ function placeCornerVariant(
     // arm1 maps to the "next" wall, arm2 to the "prev" wall (mirror handled by mirrorVariant)
     if (arm1WallLen < arm1Len - 1e-6 || arm2WallLen < arm2Len - 1e-6) continue;
 
-    const tgtFrame: Frame2D = { origin: cornerPt, xAxis: prevDir, yAxis: nextDir };
+    // Orthonormal target frame keeps the piece RIGID (a rectangle stays a
+    // rectangle). x runs along the prev wall; y is the true inward perpendicular.
+    // Because the corner is only accepted within ~8.6° of square (dot < 0.15),
+    // the piece hugs the prev wall exactly and leaves at most a thin triangular
+    // gap against the next wall — correct for rigid furniture, which cannot bend.
+    const tgtYperp = perpCCW(prevDir);
+    const tgtFrame: Frame2D = {
+      origin: cornerPt,
+      xAxis: prevDir,
+      yAxis: dot(tgtYperp, nextDir) >= 0 ? tgtYperp : scalePt(tgtYperp, -1),
+    };
     const tp = (p: Point2D) => transformPoint(p, srcFrame, tgtFrame);
 
     const transformedSmallBbox = variant.bboxSmall.points.map((p) => tp(p as Point2D));
@@ -907,12 +952,9 @@ function placeLineVariant(
         const transformedSmallBbox = variant.bboxSmall.points.map((p) => tp(p as Point2D));
         const transformedBbox      = variant.bboxBig.points.map((p)   => tp(p as Point2D));
 
-        const sCx = transformedSmallBbox.reduce((s, p) => s + p[0], 0) / transformedSmallBbox.length;
-        const sCy = transformedSmallBbox.reduce((s, p) => s + p[1], 0) / transformedSmallBbox.length;
-        const insetSmall = transformedSmallBbox.map(
-          p => [p[0] * 0.99 + sCx * 0.01, p[1] * 0.99 + sCy * 0.01] as Point2D,
-        );
-        if (!insetSmall.every(pt => pointInPolygon(pt, edgePoly))) continue;
+        // Footprint must lie inside the room — corners AND edges (catches a
+        // footprint bulging past a slanted wall between its corners).
+        if (!insetInside(transformedSmallBbox, edgePoly)) continue;
 
         options.push({
           variantIndex: vi,

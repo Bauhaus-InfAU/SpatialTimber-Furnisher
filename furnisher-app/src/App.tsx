@@ -294,6 +294,59 @@ function snapToRoomWall(
   return { point: best.pt, wallA: best.a, wallB: best.b, inward };
 }
 
+// ─── Failed-candidate helpers ──────────────────────────────────────────────────
+// A "failed candidate" is a pipeline piece the engine could NOT auto-place
+// (its StepOptions.selected is null / allOptions is empty). We surface it as a
+// draggable footprint so the user can try to place it by hand.
+
+type FailedCandidate = {
+  roomId: string;
+  stepIndex: number;
+  furnitureName: string;
+  variantIndex: number;
+  /** Footprint geometry we construct ourselves (no engine placement exists). */
+  placed: PlacedFurniture;
+};
+
+/** The longest edge of a room polygon plus its inward normal. */
+function longestWallOf(points: Point2D[]): { a: Point2D; b: Point2D; inward: Point2D } | null {
+  if (points.length < 2) return null;
+  let bestLen = -1;
+  let bi = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const len = distance(a, b);
+    if (len > bestLen) { bestLen = len; bi = i; }
+  }
+  const a = points[bi];
+  const b = points[(bi + 1) % points.length];
+  const dir = normalizeVector({ x: b.x - a.x, y: b.y - a.y });
+  const n = perpCounterClockwise(dir);
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const inward = pointInPolygon(addPoint(mid, scalePoint(n, 0.05)), points) ? n : scalePoint(n, -1);
+  return { a, b, inward };
+}
+
+/** Build a rigid, rectangular footprint for a piece flush against a wall,
+ *  centred on the wall midpoint and extending inward — reusing the exact same
+ *  placer the manual drop flow uses (placeVariantAtCorner). */
+function placeCandidateAgainstWall(
+  variant: FurnitureVariant,
+  wall: { a: Point2D; b: Point2D; inward: Point2D },
+  furnitureName: string,
+): PlacedFurniture {
+  const lp = variant.linePlacement.points as unknown as [number, number][];
+  const cornerSrcPt: [number, number] = [(lp[0][0] + lp[1][0]) / 2, (lp[0][1] + lp[1][1]) / 2];
+  const mid: [number, number] = [(wall.a.x + wall.b.x) / 2, (wall.a.y + wall.b.y) / 2];
+  return placeVariantAtCorner(
+    variant,
+    [wall.a.x, wall.a.y], [wall.b.x, wall.b.y], [wall.inward.x, wall.inward.y],
+    cornerSrcPt, mid,
+    furnitureName,
+  );
+}
+
 // ─── Engine adapters ──────────────────────────────────────────────────────────
 
 function inferApartmentType(rooms: DrawnRoom[]) {
@@ -1190,6 +1243,11 @@ function FurnitureHandles({
   svgRef,
   onSelect,
   onDrop,
+  failedCandidates,
+  showFailedCandidates,
+  selectedCandidateKey,
+  onSelectCandidate,
+  onCandidateDrop,
 }: {
   rooms: DrawnRoom[];
   furnishedRooms: FurnishedRoomResult[];
@@ -1199,8 +1257,16 @@ function FurnitureHandles({
   svgRef: React.RefObject<SVGSVGElement | null>;
   onSelect: (key: FurnitureKey | null) => void;
   onDrop: (roomId: string, stepIdx: number, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
+  failedCandidates: FailedCandidate[];
+  showFailedCandidates: boolean;
+  selectedCandidateKey: FurnitureKey | null;
+  onSelectCandidate: (key: FurnitureKey | null) => void;
+  onCandidateDrop: (key: FurnitureKey, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
 }) {
   const [drag, setDrag] = useState<FurnitureDragState | null>(null);
+  // Separate drag state for failed candidates — reuses the same pointer math,
+  // snapToRoomWall, wall-midpoint handle and ghost as the placed-furniture drag.
+  const [candDrag, setCandDrag] = useState<FurnitureDragState | null>(null);
 
   function toWorld(clientX: number, clientY: number): Point2D | null {
     const svg = svgRef.current;
@@ -1303,6 +1369,115 @@ function FurnitureHandles({
           ];
         });
       })}
+
+      {/* Failed / unplaced candidates — draggable footprints for pieces the
+          engine could not auto-place. Shown for every furnished room, not just
+          the selected one. Reuses the same drag machinery as placed furniture. */}
+      {showFailedCandidates && failedCandidates.flatMap((c) => {
+        const room = rooms.find((r) => r.id === c.roomId);
+        if (!room) return [];
+        const isSelected =
+          selectedCandidateKey?.roomId === c.roomId && selectedCandidateKey?.stepIndex === c.stepIndex;
+        const isDragging =
+          candDrag?.roomId === c.roomId && candDrag?.stepIndex === c.stepIndex;
+
+        const smallPts = (c.placed.transformedSmallBbox as unknown as [number, number][]).map(([x, y]) => ({ x, y }));
+        const smallPath = pointsToPath(smallPts, true);
+        const bboxPts = (c.placed.transformedBbox as unknown as [number, number][]).map(([x, y]) => ({ x, y }));
+        const labelPt = polygonCentroid(smallPts);
+        const handlePt = isSelected ? getWallMidpointPt(c.placed) : null;
+
+        return [
+          <g key={`cand-${c.roomId}-${c.stepIndex}`} className={`failed-candidate${isSelected ? " selected" : ""}`}>
+            {/* Symbol geometry drawn in the distinct "unplaced" style */}
+            {c.placed.transformedGeometry.map((geom, j) => (
+              <path
+                key={`cg-${j}`}
+                d={pointsToPath(geom.points.map(([x, y]) => ({ x, y })), geom.closed)}
+                className={`failed-candidate-geom${geom.closed ? " closed" : ""}`}
+              />
+            ))}
+            {/* Dashed footprint outline */}
+            <path d={smallPath} className="failed-candidate-bbox" />
+            {/* Piece-name label */}
+            <text
+              className="failed-candidate-label"
+              x={labelPt.x}
+              y={labelPt.y}
+              textAnchor="middle"
+              dominantBaseline="central"
+            >
+              {c.furnitureName}
+            </text>
+            {/* Transparent click target for selection */}
+            {isFurnishMode && (
+              <path
+                d={smallPath}
+                fill="transparent"
+                stroke="none"
+                style={{ pointerEvents: "all", cursor: "pointer" }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectCandidate(
+                    isSelected ? null : { roomId: c.roomId, stepIndex: c.stepIndex },
+                  );
+                }}
+              />
+            )}
+
+            {/* Wall-midpoint drag handle (only when selected) */}
+            {handlePt && (
+              <circle
+                cx={handlePt.x} cy={handlePt.y} r="0.13"
+                className="furniture-drag-handle"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const w = toWorld(e.clientX, e.clientY);
+                  if (!w) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setCandDrag({ roomId: c.roomId, stepIndex: c.stepIndex, cursor: w });
+                }}
+                onPointerMove={(e) => {
+                  if (!candDrag) return;
+                  const w = toWorld(e.clientX, e.clientY);
+                  if (w) setCandDrag((d) => (d ? { ...d, cursor: w } : null));
+                }}
+                onPointerUp={(e) => {
+                  if (!candDrag || candDrag.roomId !== c.roomId || candDrag.stepIndex !== c.stepIndex) return;
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                  const s = snapToRoomWall(candDrag.cursor, room);
+                  if (s) {
+                    onCandidateDrop(
+                      { roomId: c.roomId, stepIndex: c.stepIndex },
+                      s.point, s.wallA, s.wallB, s.inward,
+                    );
+                  }
+                  setCandDrag(null);
+                }}
+                onPointerCancel={() => setCandDrag(null)}
+              />
+            )}
+
+            {/* Drag ghost + snap indicator */}
+            {isDragging && candDrag && handlePt && (() => {
+              const dx = candDrag.cursor.x - handlePt.x;
+              const dy = candDrag.cursor.y - handlePt.y;
+              const ghostPts = bboxPts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+              const snap = snapToRoomWall(candDrag.cursor, room);
+              return (
+                <>
+                  <path d={pointsToPath(ghostPts, true)} className="furniture-drag-ghost" />
+                  {snap && <circle cx={snap.point.x} cy={snap.point.y} r="0.09" className="furniture-snap-point" />}
+                  {snap && (
+                    <line x1={candDrag.cursor.x} y1={candDrag.cursor.y} x2={snap.point.x} y2={snap.point.y} className="furniture-drag-line" />
+                  )}
+                </>
+              );
+            })()}
+          </g>,
+        ];
+      })}
     </>
   );
 }
@@ -1335,6 +1510,11 @@ function ViewerLayer({
   onFurnitureDrop,
   onPan,
   showTransitionAreas,
+  failedCandidates,
+  showFailedCandidates,
+  selectedCandidateKey,
+  onSelectCandidate,
+  onCandidateDrop,
 }: {
   backgroundImages: BackgroundImage[];
   calibration: ScaleCalibration;
@@ -1361,6 +1541,11 @@ function ViewerLayer({
   onFurnitureDrop: (roomId: string, stepIdx: number, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
   onPan: (cx: number, cy: number) => void;
   showTransitionAreas: boolean;
+  failedCandidates: FailedCandidate[];
+  showFailedCandidates: boolean;
+  selectedCandidateKey: FurnitureKey | null;
+  onSelectCandidate: (key: FurnitureKey | null) => void;
+  onCandidateDrop: (key: FurnitureKey, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const viewBox = `${transform.centerX - transform.metresAcross / 2} ${transform.centerY - transform.metresAcross / 2} ${transform.metresAcross} ${transform.metresAcross}`;
@@ -1438,6 +1623,7 @@ function ViewerLayer({
     // idle — deselect room and furniture on background click
     onSelectRoom(null);
     onSelectFurniture(null);
+    onSelectCandidate(null);
   }
 
   function handleSvgPointerMove(event: PointerEvent<SVGSVGElement>) {
@@ -1567,6 +1753,11 @@ function ViewerLayer({
         svgRef={svgRef}
         onSelect={onSelectFurniture}
         onDrop={onFurnitureDrop}
+        failedCandidates={failedCandidates}
+        showFailedCandidates={showFailedCandidates}
+        selectedCandidateKey={selectedCandidateKey}
+        onSelectCandidate={onSelectCandidate}
+        onCandidateDrop={onCandidateDrop}
       />
       {showTransitionAreas && (
         <g className="transition-areas-overlay" style={{ pointerEvents: "none" }}>
@@ -1752,6 +1943,12 @@ export default function App() {
     roomOverrides: {},
   });
   const [selectedFurnitureKey, setSelectedFurnitureKey] = useState<FurnitureKey | null>(null);
+  // Failed / unplaced candidates — pure session UI state (see the rebuild effect
+  // and handlers below). Declared here so the keydown effect can depend on the
+  // selected candidate without a temporal-dead-zone reference.
+  const [showFailedCandidates, setShowFailedCandidates] = useState(false);
+  const [failedCandidates, setFailedCandidates] = useState<FailedCandidate[]>([]);
+  const [selectedCandidateKey, setSelectedCandidateKey] = useState<FurnitureKey | null>(null);
   // Non-furnishable areas (corridors, …) from a loaded dataset apartment — display-only.
   const [datasetContext, setDatasetContext] = useState<DatasetContextArea[]>([]);
 
@@ -2404,6 +2601,11 @@ export default function App() {
         setSelectedRoomId(null);
         if (selectedTool !== "upload" && selectedTool !== "furnish") setSelectedTool("upload");
       }
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedCandidateKey) {
+        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+        handleDeleteCandidate(selectedCandidateKey);
+        return;
+      }
       if (event.key === "Delete" && selectedRoomId) {
         if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
         setRooms((current) => current.filter((r) => r.id !== selectedRoomId));
@@ -2420,9 +2622,90 @@ export default function App() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [selectedTool]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTool, selectedRoomId, selectedCandidateKey]);
 
   const [showTransitionAreas, setShowTransitionAreas] = useState(false);
+
+  // ── Failed / unplaced candidates ────────────────────────────────────────────
+  // Rebuild the candidate set whenever the furnish result (or layout it depends
+  // on) changes. Candidates are pure UI state and are deliberately NOT part of
+  // the layout signature, so building / dragging / deleting them can never
+  // re-trigger the auto-furnish effect (this effect only *reads* furnish output).
+  useEffect(() => {
+    const aptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
+    const customLibrary = buildCustomLibrary(pipelineConfig, aptType);
+    const next: FailedCandidate[] = [];
+    for (const rr of furnishedRooms) {
+      const room = rooms.find((r) => r.id === rr.roomId);
+      if (!room || room.points.length < 3) continue;
+      const wall = longestWallOf(room.points);
+      if (!wall) continue;
+      const category = roomNameToFurnitureCategory(rr.roomName as RoomName);
+      rr.steps.forEach((step, si) => {
+        // Unplaced iff the engine committed no placement for this step.
+        if (step.selected !== null) return;
+        // Only pieces that resolve to a real library entry have geometry to
+        // draw; steps with a joined "A | B" name (no entry at all) are skipped.
+        const entry = findFurnitureByName(customLibrary, aptType, category, step.furnitureName);
+        const variant = entry?.pieces[0]?.variants[0];
+        if (!variant) return;
+        next.push({
+          roomId: rr.roomId,
+          stepIndex: si,
+          furnitureName: step.furnitureName,
+          variantIndex: 0,
+          placed: placeCandidateAgainstWall(variant, wall, step.furnitureName),
+        });
+      });
+    }
+    setFailedCandidates(next);
+    setSelectedCandidateKey(null);
+  }, [furnishedRooms, rooms, pipelineConfig]);
+
+  // Reposition a dragged candidate — reuses placeVariantAtCorner exactly like
+  // the manual furniture-drop flow (handleFurnitureDrop), but only updates the
+  // candidate's own footprint; it never runs the pipeline or touches placed
+  // furniture. Overlap with existing furniture is allowed by design.
+  function handleCandidateDrop(
+    key: FurnitureKey,
+    snapPt: Point2D,
+    wallA: Point2D,
+    wallB: Point2D,
+    inward: Point2D,
+  ) {
+    const rr = furnishedRooms.find((r) => r.roomId === key.roomId);
+    if (!rr) return;
+    const aptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
+    const customLibrary = buildCustomLibrary(pipelineConfig, aptType);
+    const category = roomNameToFurnitureCategory(rr.roomName as RoomName);
+
+    setFailedCandidates((prev) =>
+      prev.map((c) => {
+        if (c.roomId !== key.roomId || c.stepIndex !== key.stepIndex) return c;
+        const entry = findFurnitureByName(customLibrary, aptType, category, c.furnitureName);
+        const variant = entry?.pieces[0]?.variants[c.variantIndex];
+        if (!variant) return c;
+        const lp = variant.linePlacement.points as unknown as [number, number][];
+        const cornerSrcPt: [number, number] = [(lp[0][0] + lp[1][0]) / 2, (lp[0][1] + lp[1][1]) / 2];
+        const newPlaced = placeVariantAtCorner(
+          variant,
+          [wallA.x, wallA.y], [wallB.x, wallB.y], [inward.x, inward.y],
+          cornerSrcPt, [snapPt.x, snapPt.y],
+          c.furnitureName,
+        );
+        return { ...c, placed: newPlaced };
+      }),
+    );
+  }
+
+  // Delete a candidate from the session (UI state only — no pipeline change).
+  function handleDeleteCandidate(key: FurnitureKey) {
+    setFailedCandidates((prev) =>
+      prev.filter((c) => !(c.roomId === key.roomId && c.stepIndex === key.stepIndex)),
+    );
+    setSelectedCandidateKey(null);
+  }
 
   const isFurnished = furnishedRooms.length > 0;
   const computedAptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
@@ -2455,6 +2738,8 @@ export default function App() {
         onLoadDatasetApartment={handleLoadDatasetApartment}
         showTransitionAreas={showTransitionAreas}
         onToggleTransitionAreas={() => setShowTransitionAreas((v) => !v)}
+        showFailedCandidates={showFailedCandidates}
+        onToggleFailedCandidates={() => setShowFailedCandidates((v) => !v)}
       />
 
       <section
@@ -2489,6 +2774,11 @@ export default function App() {
           onFurnitureDrop={handleFurnitureDrop}
           onPan={(cx, cy) => setTransform((t) => ({ ...t, centerX: cx, centerY: cy }))}
           showTransitionAreas={showTransitionAreas}
+          failedCandidates={failedCandidates}
+          showFailedCandidates={showFailedCandidates}
+          selectedCandidateKey={selectedCandidateKey}
+          onSelectCandidate={setSelectedCandidateKey}
+          onCandidateDrop={handleCandidateDrop}
         />
 
         {isFurnished ? (

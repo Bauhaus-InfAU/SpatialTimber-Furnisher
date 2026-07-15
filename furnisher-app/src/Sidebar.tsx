@@ -23,6 +23,8 @@ type SidebarProps = {
   onFurnish: () => void;
   showTransitionAreas: boolean;
   onToggleTransitionAreas: () => void;
+  showFailedCandidates: boolean;
+  onToggleFailedCandidates: () => void;
   onSetDrawMode: (mode: "rectangle" | "lines") => void;
   onToggleOrtho: () => void;
   onSetAptType: (type: number | null) => void;
@@ -563,6 +565,7 @@ export function Sidebar({
   drawMode, orthoMode, aptType, pipelineConfig,
   onSelectTool, onUploadClick, onReset, onFurnish,
   showTransitionAreas, onToggleTransitionAreas,
+  showFailedCandidates, onToggleFailedCandidates,
   onSetDrawMode, onToggleOrtho, onSetAptType, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
   onLoadDatasetApartment,
@@ -618,6 +621,13 @@ export function Sidebar({
               onClick={onToggleTransitionAreas}
             >
               Transition zones
+            </button>
+            <button
+              type="button"
+              className={`afford${showFailedCandidates ? " active" : ""}`}
+              onClick={onToggleFailedCandidates}
+            >
+              Failed pieces
             </button>
           </div>
         )}
