@@ -48,6 +48,9 @@ export type DrawnRoom = {
   color: string;
   doors: Point2D[];
   windows: Point2D[];
+  /** Per-window real widths (metres), aligned with `windows`. Absent for
+   *  user-drawn rooms and older bundles → fall back to windowWidth(type). */
+  windowWidths?: number[];
 };
 
 export type RoomDraft = {

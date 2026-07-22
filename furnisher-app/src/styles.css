@@ -1070,6 +1070,29 @@ button {
   vector-effect: non-scaling-stroke;
 }
 
+/* ─── Apartment entrance ───────────────────────────────────────────────────── */
+/* The building entrance, drawn distinct from interior doors: a heavier, warm
+   accent swing so it reads at a glance as "way into the apartment". */
+
+.apartment-entrance line,
+.apartment-entrance .entrance-arc {
+  fill: none;
+  stroke: var(--st-accent, #c0562e);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.apartment-entrance .entrance-arc {
+  opacity: 0.8;
+}
+
+.apartment-entrance .entrance-hinge {
+  fill: var(--st-accent, #c0562e);
+  stroke: var(--st-paper);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
 /* ─── Windows ──────────────────────────────────────────────────────────────── */
 
 .window-outer,
@@ -1116,6 +1139,17 @@ button {
 /* ─── Transition areas overlay ─────────────────────────────────────────────── */
 
 .transition-area-bbox {
+  fill: none;
+  stroke: rgba(20, 20, 19, 0.5);
+  stroke-width: 0.05;
+  stroke-linecap: round;
+  stroke-dasharray: 0.001 0.18;
+}
+
+/* Door swing/clearance rectangle shown as a transition area (Transition Zones on).
+   Filled + dotted so it reads as the door's "keep clear" zone, distinct from the
+   furniture clearance outlines. */
+.door-transition-area {
   fill: none;
   stroke: rgba(20, 20, 19, 0.5);
   stroke-width: 0.05;

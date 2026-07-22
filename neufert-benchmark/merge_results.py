@@ -171,6 +171,7 @@ def main():
                 "apartment_id": req.get("apartment_id", ""),
                 "rooms": req["rooms"],
                 "doors": req["doors"],
+                "entrance": req.get("entrance", []),
                 "context": req.get("context", []),
                 "walls": walls_by_id.get(bfa, []),
                 "meta": {

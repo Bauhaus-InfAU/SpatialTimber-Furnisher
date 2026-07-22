@@ -45,7 +45,8 @@ SLEEPING_SUBTYPES = {"BEDROOM", "ROOM"}
 BATH_SUBTYPES = {"BATHROOM"}
 FURNISHABLE = KITCHEN_SUBTYPES | LIVING_SUBTYPES | SLEEPING_SUBTYPES | BATH_SUBTYPES
 BATH_FEATURES = {"BATHTUB", "SHOWER"}
-DOOR_SUBTYPES = {"DOOR", "ENTRANCE_DOOR"}
+DOOR_SUBTYPES = {"DOOR"}          # interior doors → assigned to furnishable rooms
+ENTRANCE_SUBTYPE = "ENTRANCE_DOOR"  # apartment entrance → carried apartment-level
 # Not furnishable, but carried through as display-only context so apartments
 # don't render as floating rooms in the app.
 CONTEXT_SUBTYPES = {"CORRIDOR"}
@@ -80,6 +81,13 @@ def dedupe_vertices(pts, tol=0.005):
     while len(out) > 3 and math.dist(out[0], out[-1]) < tol:
         out.pop()
     return out
+
+
+def opening_width(pts):
+    """Along-wall width of an opening polygon = its longest edge. Window widths
+    in the dataset vary 0.5–4 m, so the app needs the real width to cut wall
+    openings without eating wall or merging neighbours."""
+    return max(math.dist(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts)))
 
 
 def remove_collinear(pts, cross_tol=0.002):
@@ -320,7 +328,7 @@ def process_apartment(bfa, ent, stats):
     for name, a in named:
         poly = a["polygon"]
         windows = [w for w in ent["windows"]
-                   if dist_point_to_polygon(w, poly) <= WINDOW_ASSIGN_DIST]
+                   if dist_point_to_polygon(w[0], poly) <= WINDOW_ASSIGN_DIST]
         # Simplify in the canonical frame with the SAME algorithm the engine uses
         # (collapse noise, ortho-snap, drop collinear) so the stored polygon is
         # exactly what the engine furnishes — the app then renders what it places,
@@ -329,7 +337,8 @@ def process_apartment(bfa, ent, stats):
         rooms.append({
             "name": name,
             "polygon": [[round(x, 3), round(y, 3)] for x, y in poly_rot],
-            "windows": [[round(x, 3), round(y, 3)] for x, y in map(rot, windows)],
+            "windows": [[round(x, 3), round(y, 3)] for x, y in map(rot, [w[0] for w in windows])],
+            "windowWidths": [round(w[1], 3) for w in windows],
             "subtype": a["subtype"],
             "area": round(a["area"], 3),
         })
@@ -346,6 +355,14 @@ def process_apartment(bfa, ent, stats):
         1 for _, a in named
         if any(dist_point_to_polygon(d, a["polygon"]) <= DOOR_ASSIGN_DIST for d in ent["doors"])
     )
+
+    # Apartment entrance door(s): display-only, apartment-level (usually opens
+    # onto the building corridor, not a furnishable room, so it isn't a room door).
+    entrance = [
+        {"point": [round(x, 3), round(y, 3)], "width": round(w, 3)}
+        for (c, w) in ent["entrances"]
+        for (x, y) in [rot(c)]
+    ]
 
     # Display-only context areas (corridors): same frame, never sent to the engine.
     context = []
@@ -387,6 +404,7 @@ def process_apartment(bfa, ent, stats):
         "apartment_id": ent["meta"].get("apartment_id", ""),
         "rooms": rooms,
         "doors": doors,
+        "entrance": entrance,
         "context": context,
         "walls": walls,
         "rotation": rotation,
@@ -409,7 +427,7 @@ def main():
     csv.field_size_limit(10_000_000)
 
     apartments = defaultdict(lambda: {
-        "areas": [], "context": [], "walls": [], "bath_features": [], "doors": [],
+        "areas": [], "context": [], "walls": [], "bath_features": [], "doors": [], "entrances": [],
         "windows": [], "meta": {}, "skipped": Counter(),
     })
     stats = Counter()
@@ -440,14 +458,20 @@ def main():
                 pts, _ = parse_wkt_polygon(row["geometry"])
                 if pts:
                     ent["bath_features"].append(centroid(pts))
-            elif et == "opening" and st in DOOR_SUBTYPES:
+            elif et == "opening" and (st in DOOR_SUBTYPES or st == ENTRANCE_SUBTYPE):
                 pts, _ = parse_wkt_polygon(row["geometry"])
                 if pts:
-                    ent["doors"].append(centroid(pts))
+                    c = centroid(pts)
+                    # Entrances are still fed to the engine as doors (they block
+                    # furniture and keep the dedup signature stable — no re-run),
+                    # and additionally recorded apartment-level for display.
+                    ent["doors"].append(c)
+                    if st == ENTRANCE_SUBTYPE:
+                        ent["entrances"].append((c, opening_width(pts)))
             elif et == "opening" and st == "WINDOW":
                 pts, _ = parse_wkt_polygon(row["geometry"])
                 if pts:
-                    ent["windows"].append(centroid(pts))
+                    ent["windows"].append((centroid(pts), opening_width(pts)))
             elif et == "separator" and st in STRUCTURE_SUBTYPES:
                 ent["walls"].append(row["geometry"])
 
@@ -483,6 +507,7 @@ def main():
                 "apartment_id": rec["apartment_id"],
                 "rooms": rec["rooms"],
                 "doors": rec["doors"],
+                "entrance": rec["entrance"],
                 "context": rec["context"],
             }, separators=(",", ":")) + "\n")
             # walls kept separate so the engine-input file stays lean

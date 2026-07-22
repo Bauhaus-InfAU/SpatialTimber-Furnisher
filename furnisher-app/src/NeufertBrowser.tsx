@@ -7,6 +7,8 @@ export type NeufertRoomRecord = {
   name: string;
   polygon: [number, number][];
   windows?: [number, number][];
+  /** Per-window real widths (metres), aligned with `windows`. */
+  windowWidths?: number[];
   subtype?: string;
   area?: number;
 };
@@ -30,6 +32,10 @@ export type NeufertRecord = {
   apartment_id: string;
   rooms: NeufertRoomRecord[];
   doors?: [number, number][];
+  /** Apartment entrance door(s): position + real leaf width (metres). Also present
+   *  in `doors` so the engine still treats them as furniture-blocking; carried
+   *  separately for a distinct apartment-level glyph. Missing on old bundles. */
+  entrance?: { point: [number, number]; width: number }[];
   /** Non-furnishable areas (corridors etc.) — display-only. Missing on old bundles. */
   context?: NeufertContextArea[];
   /** Wall thickness polygons (closed rings, metres, canonical frame) — display-only. Missing on old bundles. */

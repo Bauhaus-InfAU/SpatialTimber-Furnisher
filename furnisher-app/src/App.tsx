@@ -207,6 +207,7 @@ function getDoorSwingGeometry(room: DrawnRoom, doorPoint: Point2D) {
 
   let wallA = room.points[0];
   let wallB = room.points[1];
+  let snap = doorPoint;
   let minDistance = Infinity;
 
   for (let i = 0; i < room.points.length; i++) {
@@ -217,20 +218,44 @@ function getDoorSwingGeometry(room: DrawnRoom, doorPoint: Point2D) {
       minDistance = candidate.distance;
       wallA = a;
       wallB = b;
+      snap = candidate.point;
     }
   }
 
   const wallDir = normalizeVector({ x: wallB.x - wallA.x, y: wallB.y - wallA.y });
   const normal = perpCounterClockwise(wallDir);
-  const testPoint = addPoint(doorPoint, scalePoint(normal, 0.05));
-  const inward = pointInPolygon(testPoint, room.points) ? normal : scalePoint(normal, -1);
+  // The leaf always swings INTO the room. Dataset door centroids can sit up to
+  // ADJACENT_DOOR_THRESHOLD off the boundary (inside the wall thickness or even
+  // in the corridor), so probing from the RAW point would test a spot still
+  // outside the room and flip the normal outward. Probe from the point SNAPPED
+  // onto the wall (reliably just inside vs. just outside), and centre the swing
+  // there too so it sits on the wall.
+  const probe = addPoint(snap, scalePoint(normal, 0.05));
+  const inward = pointInPolygon(probe, room.points) ? normal : scalePoint(normal, -1);
   const width = roomDoorWidth(room.type);
 
-  const hinge = addPoint(doorPoint, scalePoint(wallDir, -width / 2));
-  const panelEnd = addPoint(hinge, scalePoint(inward, width));
-  const arcEnd = addPoint(hinge, scalePoint(wallDir, width));
-  const cross = inward.x * wallDir.y - inward.y * wallDir.x;
+  return doorSwingFromWall(snap, width, wallDir, inward, wallA, wallB);
+}
 
+/** Build a door swing hinged at the jamb nearer the closest end of its host
+ *  wall, so the open leaf tucks toward the adjacent wall/corner (architectural
+ *  convention). The leaf opens along `inward`. */
+function doorSwingFromWall(
+  doorPoint: Point2D,
+  width: number,
+  wallDir: Point2D,
+  inward: Point2D,
+  wallA: Point2D,
+  wallB: Point2D,
+) {
+  // Hinge on the side of whichever host-wall end the door sits closer to.
+  const sign = distance(doorPoint, wallA) <= distance(doorPoint, wallB) ? -1 : 1;
+  const hinge = addPoint(doorPoint, scalePoint(wallDir, (sign * width) / 2));
+  // Direction from the hinge toward the far jamb (where the arc lands).
+  const awDir = scalePoint(wallDir, -sign);
+  const arcEnd = addPoint(hinge, scalePoint(awDir, width));
+  const panelEnd = addPoint(hinge, scalePoint(inward, width));
+  const cross = inward.x * awDir.y - inward.y * awDir.x;
   return { arcEnd, hinge, panelEnd, radius: width, sweepFlag: cross > 0 ? 1 : 0, doorPoint };
 }
 
@@ -412,18 +437,70 @@ function buildDoorCutter(room: DrawnRoom, door: Point2D): [number, number][] | n
   return corners.map(toEnginePoint);
 }
 
-/** Cut door openings out of the wall thickness rings. For each wall ring, the
- *  boolean difference against all door cutters yields the wall with real gaps at
- *  doorways (a mid-span cut splits the ring into two — both kept). If subtraction
- *  throws or returns nothing for a ring, that ring is kept uncut so a robustness
- *  hiccup never deletes a wall. */
-function cutDoorwaysInWalls(wallRings: Point2D[][], rooms: DrawnRoom[]): Point2D[][] {
+/** Build one window-opening cutter rectangle (as engine tuples) for a window
+ *  point, aligned to the room's nearest polygon edge. Mirrors buildDoorCutter
+ *  but uses the given real window width (+ the same small margin) for the
+ *  along-wall span. Returns null for degenerate edges. */
+function buildWindowCutter(room: DrawnRoom, windowPt: Point2D, width: number): [number, number][] | null {
+  if (room.points.length < 2) return null;
+  // Nearest room-polygon edge to the window point.
+  let wallA = room.points[0];
+  let wallB = room.points[1];
+  let minDistance = Infinity;
+  for (let i = 0; i < room.points.length; i++) {
+    const a = room.points[i];
+    const b = room.points[(i + 1) % room.points.length];
+    const candidate = nearestPointOnSegment(windowPt, a, b);
+    if (candidate.distance < minDistance) {
+      minDistance = candidate.distance;
+      wallA = a;
+      wallB = b;
+    }
+  }
+  const wallDir = normalizeVector({ x: wallB.x - wallA.x, y: wallB.y - wallA.y });
+  if (wallDir.x === 0 && wallDir.y === 0) return null;
+  const n = perpCounterClockwise(wallDir);
+  const halfW = (width + DOOR_CUTTER_MARGIN) / 2;
+  const along = scalePoint(wallDir, halfW);
+  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  // Corners: window ± wallDir*(width/2) ± n*halfDepth.
+  const corners = [
+    addPoint(addPoint(windowPt, along), across),
+    addPoint(addPoint(windowPt, scalePoint(along, -1)), across),
+    addPoint(addPoint(windowPt, scalePoint(along, -1)), scalePoint(across, -1)),
+    addPoint(addPoint(windowPt, along), scalePoint(across, -1)),
+  ];
+  return corners.map(toEnginePoint);
+}
+
+/** Cut door AND window openings out of the wall thickness rings. For each wall
+ *  ring, the boolean difference against all cutters yields the wall with real
+ *  gaps at doorways/windows (a mid-span cut splits the ring into two — both
+ *  kept). Windows use their real per-window width when available, falling back
+ *  to windowWidth(type). If subtraction throws or returns nothing for a ring,
+ *  that ring is kept uncut so a robustness hiccup never deletes a wall. */
+function cutOpeningsInWalls(
+  wallRings: Point2D[][],
+  rooms: DrawnRoom[],
+  entrances: EntranceDoor[] = [],
+): Point2D[][] {
   const cutters: [number, number][][] = [];
   for (const room of rooms) {
     for (const door of room.doors) {
       const c = buildDoorCutter(room, door);
       if (c) cutters.push(c);
     }
+    for (let i = 0; i < room.windows.length; i++) {
+      const width = room.windowWidths?.[i] ?? windowWidth(room.type);
+      const c = buildWindowCutter(room, room.windows[i], width);
+      if (c) cutters.push(c);
+    }
+  }
+  // Apartment entrance openings — use the wall orientation baked in at load so
+  // the opening lines up with the same wall the swing glyph is drawn on.
+  for (const e of entrances) {
+    const c = buildOpeningCutterAligned(e.point, e.width, e.wallDir);
+    if (c) cutters.push(c);
   }
   if (!cutters.length) return wallRings;
 
@@ -441,6 +518,116 @@ function cutDoorwaysInWalls(wallRings: Point2D[][], rooms: DrawnRoom[]): Point2D
     }
   }
   return gapped;
+}
+
+// ─── Apartment entrance door ───────────────────────────────────────────────────
+// The apartment entrance is an apartment-level opening (it usually gives onto the
+// corridor, not a single furnishable room). It is carried separately from room
+// doors so it can be drawn with a distinct glyph, and oriented to the nearest
+// wall/room edge with the leaf swinging toward the apartment interior.
+
+// Orientation (wallDir + inward normal) is baked in at load, so the wall opening
+// cutter and the swing glyph always agree on the same wall.
+type EntranceDoor = {
+  point: Point2D;
+  width: number;
+  wallDir: Point2D;
+  inward: Point2D;
+  wallA: Point2D;
+  wallB: Point2D;
+};
+
+/** Centroid of all room vertices — a stable "inside the apartment" reference. */
+function apartmentInterior(rooms: DrawnRoom[]): Point2D {
+  let x = 0, y = 0, n = 0;
+  for (const r of rooms) for (const p of r.points) { x += p.x; y += p.y; n++; }
+  return n ? { x: x / n, y: y / n } : { x: 0, y: 0 };
+}
+
+// A wall the entrance can sit in must be at least this long — shorter edges are
+// wall end-caps (which run ACROSS the wall) or corner stubs, and orienting to
+// one would rotate the door ~90° off the real wall.
+const ENTRANCE_MIN_WALL_EDGE = 0.4;
+
+/** Orient an apartment-level opening to the nearest boundary edge, with the
+ *  inward normal pointing toward the apartment interior. `boundaries` are the
+ *  clean architectural outlines (wall faces, room + corridor polygons); short
+ *  end-cap/stub edges are skipped so the door aligns ALONG the wall, not across
+ *  it. Falls back to allowing any edge if every candidate was too short. */
+function orientToNearestEdge(
+  point: Point2D,
+  boundaries: Point2D[][],
+  interior: Point2D,
+): { wallDir: Point2D; inward: Point2D; wallA: Point2D; wallB: Point2D; snap: Point2D } | null {
+  const pick = (minLen: number) => {
+    let best: { d: number; a: Point2D; b: Point2D; snap: Point2D } | null = null;
+    for (const ring of boundaries) {
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        if (distance(a, b) < minLen) continue;
+        const r = nearestPointOnSegment(point, a, b);
+        if (!best || r.distance < best.d) best = { d: r.distance, a, b, snap: r.point };
+      }
+    }
+    return best;
+  };
+  const best = pick(ENTRANCE_MIN_WALL_EDGE) ?? pick(0);
+  if (!best) return null;
+  const wallDir = normalizeVector({ x: best.b.x - best.a.x, y: best.b.y - best.a.y });
+  if (wallDir.x === 0 && wallDir.y === 0) return null;
+  const n = perpCounterClockwise(wallDir);
+  const toInt = { x: interior.x - best.snap.x, y: interior.y - best.snap.y };
+  const inward = n.x * toInt.x + n.y * toInt.y >= 0 ? n : scalePoint(n, -1);
+  return { wallDir, inward, wallA: best.a, wallB: best.b, snap: best.snap };
+}
+
+/** Build one opening cutter rectangle from an explicit wall direction (used for
+ *  apartment-level entrances, where the wall alignment is computed separately). */
+function buildOpeningCutterAligned(
+  point: Point2D,
+  width: number,
+  wallDir: Point2D,
+): [number, number][] | null {
+  if (wallDir.x === 0 && wallDir.y === 0) return null;
+  const n = perpCounterClockwise(wallDir);
+  const halfW = (width + DOOR_CUTTER_MARGIN) / 2;
+  const along = scalePoint(wallDir, halfW);
+  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  const corners = [
+    addPoint(addPoint(point, along), across),
+    addPoint(addPoint(point, scalePoint(along, -1)), across),
+    addPoint(addPoint(point, scalePoint(along, -1)), scalePoint(across, -1)),
+    addPoint(addPoint(point, along), scalePoint(across, -1)),
+  ];
+  return corners.map(toEnginePoint);
+}
+
+/** Swing glyph geometry for an apartment entrance — same hinge-near-closest-wall
+ *  rule as interior doors, opening toward the apartment interior. */
+function getEntranceSwingGeometry(e: EntranceDoor) {
+  return doorSwingFromWall(e.point, e.width, e.wallDir, e.inward, e.wallA, e.wallB);
+}
+
+function EntranceLayer({ entrances }: { entrances: EntranceDoor[] }) {
+  if (!entrances.length) return null;
+  return (
+    <g className="apartment-entrance-layer" style={{ pointerEvents: "none" }}>
+      {entrances.map((e, i) => {
+        const g = getEntranceSwingGeometry(e);
+        return (
+          <g key={i} className="apartment-entrance">
+            <line x1={g.hinge.x} y1={g.hinge.y} x2={g.panelEnd.x} y2={g.panelEnd.y} />
+            <path
+              className="entrance-arc"
+              d={`M ${g.panelEnd.x} ${g.panelEnd.y} A ${g.radius} ${g.radius} 0 0 ${g.sweepFlag} ${g.arcEnd.x} ${g.arcEnd.y}`}
+            />
+            <circle className="entrance-hinge" cx={g.hinge.x} cy={g.hinge.y} r="0.05" />
+          </g>
+        );
+      })}
+    </g>
+  );
 }
 
 // ─── Shared-door display ownership ─────────────────────────────────────────────
@@ -1130,31 +1317,67 @@ function DoorSwing({
   room,
   ownedDoors,
   showAll,
+  entrancePoints,
 }: {
   room: DrawnRoom;
   ownedDoors: boolean[];
   showAll: boolean;
+  entrancePoints: Point2D[];
 }) {
   if (!room.doors.length) return null;
   return (
     <>
       {room.doors.map((doorPoint, i) => {
-        // Normal view: only the owning room draws a shared door (once).
-        // Transition-zones view: every room draws its own clearance so both
-        // sides of a shared door are visible.
-        if (!showAll && !ownedDoors[i]) return null;
+        // The door SWING glyph (arc + panel) is drawn once per physical door,
+        // by the owning room, in BOTH views — so Transition Zones never adds a
+        // duplicate door. The clearance ZONE is drawn per room in transition
+        // view so both sides of a shared door are visible.
+        // A door that coincides with the apartment entrance is drawn by
+        // EntranceLayer instead (distinct glyph); suppress the plain glyph here
+        // to avoid a double swing, but keep its clearance zone.
+        const isEntrance = entrancePoints.some((e) => distance(e, doorPoint) < 0.05);
+        const drawGlyph = ownedDoors[i] && !isEntrance;
+        const drawZone = showAll;
+        if (!drawGlyph && !drawZone) return null;
         const geometry = getDoorSwingGeometry(room, doorPoint);
         if (!geometry) return null;
-        const { arcEnd, hinge, panelEnd, radius, sweepFlag } = geometry;
+        const { arcEnd, hinge, radius, sweepFlag, panelEnd } = geometry;
+        // Door clearance/transition area = a door-width square reaching from the
+        // doorway INTO THE ROOM INTERIOR (the passage/approach zone furniture
+        // must keep clear). Note the leaf may swing the OTHER way (into a
+        // corridor); the swing arc already shows that side, so we always draw
+        // this square toward the room's interior, not the swing side. Direction
+        // is taken toward the room centroid so it's correct regardless of swing.
+        const w = radius;
+        const wallDir = { x: (arcEnd.x - hinge.x) / w, y: (arcEnd.y - hinge.y) / w };
+        const dc = { x: (hinge.x + arcEnd.x) / 2, y: (hinge.y + arcEnd.y) / 2 };
+        const nrm = perpCounterClockwise(wallDir);
+        const cx = room.points.reduce((s, p) => s + p.x, 0) / room.points.length;
+        const cy = room.points.reduce((s, p) => s + p.y, 0) / room.points.length;
+        const roomInward = (nrm.x * (cx - dc.x) + nrm.y * (cy - dc.y)) >= 0 ? nrm : { x: -nrm.x, y: -nrm.y };
+        const t0 = { x: dc.x - wallDir.x * (w / 2), y: dc.y - wallDir.y * (w / 2) };
+        const t1 = { x: dc.x + wallDir.x * (w / 2), y: dc.y + wallDir.y * (w / 2) };
+        const t2 = { x: t1.x + roomInward.x * w, y: t1.y + roomInward.y * w };
+        const t3 = { x: t0.x + roomInward.x * w, y: t0.y + roomInward.y * w };
         return (
           <g key={i} className="room-door">
-            <line x1={hinge.x} y1={hinge.y} x2={panelEnd.x} y2={panelEnd.y} />
-            <path
-              className="door-arc"
-              d={`M ${panelEnd.x} ${panelEnd.y} A ${radius} ${radius} 0 0 ${sweepFlag} ${arcEnd.x} ${arcEnd.y}`}
-            />
-            <circle className="door-hinge" cx={hinge.x} cy={hinge.y} r="0.035" />
-            <circle className="door-center" cx={doorPoint.x} cy={doorPoint.y} r="0.05" />
+            {drawZone && (
+              <path
+                className="door-transition-area"
+                d={pointsToPath([t0, t1, t2, t3], true)}
+              />
+            )}
+            {drawGlyph && (
+              <>
+                <line x1={hinge.x} y1={hinge.y} x2={panelEnd.x} y2={panelEnd.y} />
+                <path
+                  className="door-arc"
+                  d={`M ${panelEnd.x} ${panelEnd.y} A ${radius} ${radius} 0 0 ${sweepFlag} ${arcEnd.x} ${arcEnd.y}`}
+                />
+                <circle className="door-hinge" cx={hinge.x} cy={hinge.y} r="0.035" />
+                <circle className="door-center" cx={doorPoint.x} cy={doorPoint.y} r="0.05" />
+              </>
+            )}
           </g>
         );
       })}
@@ -1166,7 +1389,7 @@ function windowWidth(roomType: RoomToolId): number {
   return roomType === "Bathroom" || roomType === "WC" || roomType === "Kitchen" ? 1.0 : 1.5;
 }
 
-function getWindowGeometry(room: DrawnRoom, windowPt: Point2D) {
+function getWindowGeometry(room: DrawnRoom, windowPt: Point2D, width?: number) {
   if (room.points.length < 2) return null;
   let wallA = room.points[0], wallB = room.points[1];
   let minDist = Infinity;
@@ -1177,7 +1400,7 @@ function getWindowGeometry(room: DrawnRoom, windowPt: Point2D) {
   }
   const dir = normalizeVector({ x: wallB.x - wallA.x, y: wallB.y - wallA.y });
   const snap = nearestPointOnSegment(windowPt, wallA, wallB).point;
-  const half = windowWidth(room.type) / 2;
+  const half = (width ?? windowWidth(room.type)) / 2;
   const start = { x: snap.x - dir.x * half, y: snap.y - dir.y * half };
   const end   = { x: snap.x + dir.x * half, y: snap.y + dir.y * half };
   const normal = perpCounterClockwise(dir);
@@ -1192,7 +1415,7 @@ function WindowDisplay({ room }: { room: DrawnRoom }) {
   return (
     <>
       {room.windows.map((winPt, i) => {
-        const g = getWindowGeometry(room, winPt);
+        const g = getWindowGeometry(room, winPt, room.windowWidths?.[i] ?? windowWidth(room.type));
         if (!g) return null;
         const { start, end, snap, inward, reveal } = g;
         const inner = (p: Point2D) => addPoint(p, scalePoint(inward, -reveal));
@@ -1218,6 +1441,7 @@ function RoomLayer({
   selectedRoomId,
   selectable,
   showTransitionAreas,
+  entrancePoints,
   onSelectRoom,
 }: {
   draft: RoomDraft | null;
@@ -1227,6 +1451,7 @@ function RoomLayer({
   selectedRoomId: string | null;
   selectable: boolean;
   showTransitionAreas: boolean;
+  entrancePoints: Point2D[];
   onSelectRoom: (id: string) => void;
 }) {
   const furnishedByRoomId = new Map(furnishedRooms.map((r) => [r.roomId, r]));
@@ -1269,6 +1494,7 @@ function RoomLayer({
             room={room}
             ownedDoors={doorOwnership.get(room.id) ?? []}
             showAll={showTransitionAreas}
+            entrancePoints={entrancePoints}
           />
           <WindowDisplay room={room} />
           <FurniturePreview pieces={(furnishedByRoomId.get(room.id)?.steps ?? []).flatMap((s) => s.selected ? [s.selected.placed] : [])} />
@@ -1620,6 +1846,7 @@ function ViewerLayer({
   selectedFurnitureKey,
   datasetContext,
   datasetWalls,
+  datasetEntrances,
   showWalls,
   onCalibrationClick,
   onCalibrationMove,
@@ -1653,6 +1880,7 @@ function ViewerLayer({
   selectedFurnitureKey: FurnitureKey | null;
   datasetContext: DatasetContextArea[];
   datasetWalls: Point2D[][];
+  datasetEntrances: EntranceDoor[];
   showWalls: boolean;
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
@@ -1866,30 +2094,43 @@ function ViewerLayer({
         selectedRoomId={selectedRoomId}
         selectable={selectable}
         showTransitionAreas={showTransitionAreas}
+        entrancePoints={datasetEntrances.map((e) => e.point)}
         onSelectRoom={onSelectRoom}
       />
       {showWalls ? <DatasetWallLayer walls={datasetWalls} /> : null}
+      <EntranceLayer entrances={datasetEntrances} />
       {selectedRoom && selectable ? (
         <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="body" />
       ) : null}
-      <FurnitureHandles
-        rooms={rooms}
-        furnishedRooms={furnishedRooms}
-        selectedKey={selectedFurnitureKey}
-        selectedRoomId={selectedRoomId}
-        isFurnishMode={selectedTool === "furnish"}
-        svgRef={svgRef}
-        onSelect={onSelectFurniture}
-        onDrop={onFurnitureDrop}
-        failedCandidates={failedCandidates}
-        showFailedCandidates={showFailedCandidates}
-        selectedCandidateKey={selectedCandidateKey}
-        onSelectCandidate={onSelectCandidate}
-        onCandidateDrop={onCandidateDrop}
-      />
-      {selectedRoom && selectable ? (
-        <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="handles" />
-      ) : null}
+      {(() => {
+        const furnitureHandlesEl = (
+          <FurnitureHandles
+            rooms={rooms}
+            furnishedRooms={furnishedRooms}
+            selectedKey={selectedFurnitureKey}
+            selectedRoomId={selectedRoomId}
+            isFurnishMode={selectedTool === "furnish"}
+            svgRef={svgRef}
+            onSelect={onSelectFurniture}
+            onDrop={onFurnitureDrop}
+            failedCandidates={failedCandidates}
+            showFailedCandidates={showFailedCandidates}
+            selectedCandidateKey={selectedCandidateKey}
+            onSelectCandidate={onSelectCandidate}
+            onCandidateDrop={onCandidateDrop}
+          />
+        );
+        const roomHandlesEl = selectedRoom && selectable ? (
+          <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="handles" />
+        ) : null;
+        // Whichever selection is active wins the top layer (its drag points take
+        // priority): a selected furniture piece's handle beats the room's
+        // vertex/edge handles; with only a room selected, the room handles win.
+        const furnitureSelected = selectedFurnitureKey != null;
+        return furnitureSelected
+          ? <>{roomHandlesEl}{furnitureHandlesEl}</>
+          : <>{furnitureHandlesEl}{roomHandlesEl}</>;
+      })()}
       {showTransitionAreas && (
         <g className="transition-areas-overlay" style={{ pointerEvents: "none" }}>
           {furnishedRooms.flatMap((rr) =>
@@ -2084,6 +2325,7 @@ export default function App() {
   const [datasetContext, setDatasetContext] = useState<DatasetContextArea[]>([]);
   // Wall thickness polygons from a loaded dataset apartment — display-only. Shown by default.
   const [datasetWalls, setDatasetWalls] = useState<Point2D[][]>([]);
+  const [datasetEntrances, setDatasetEntrances] = useState<EntranceDoor[]>([]);
   const [showWalls, setShowWalls] = useState(true);
 
   // Non-passive wheel listener so preventDefault actually works and prevents browser zoom
@@ -2164,6 +2406,7 @@ export default function App() {
     setSelectedRoomId(null);
     setDatasetContext([]);
     setDatasetWalls([]);
+    setDatasetEntrances([]);
     setSelectedTool("upload");
   }
 
@@ -2630,6 +2873,10 @@ export default function App() {
         color: tool.color,
         doors: globalDoors.filter((d) => distPointToPolygonBoundary(d, points) <= ADJACENT_DOOR_THRESHOLD),
         windows: (room.windows ?? []).map(translate),
+        // Real per-window widths (unaffected by the translation offset). Same
+        // index order as windows; absent on older bundles → symbol/opening fall
+        // back to windowWidth(type).
+        ...(Array.isArray(room.windowWidths) ? { windowWidths: room.windowWidths } : {}),
       });
     }
     if (!converted.length) return;
@@ -2650,13 +2897,39 @@ export default function App() {
       .filter((ring) => Array.isArray(ring) && ring.length >= 3)
       .map((ring) => ring.map(translate));
 
-    // Cut real door openings out of the wall rings so each doorway is a clean gap
-    // with proper jamb ends (baked in at load — render is unchanged). Wrapped in a
+    // Cut real door AND window openings out of the wall rings so each opening is a
+    // clean gap with proper jamb ends (baked in at load — render is unchanged).
+    // Windows use their real per-window width when the bundle provides it. Wrapped in a
     // try/catch so a bad apartment can never break loading; on any failure we fall
     // back to the uncut wall rings.
+    // Apartment entrance door(s): translated with the same room-derived offset.
+    // Also present in the door set (so the engine already accounts for them);
+    // kept here for a distinct apartment-level glyph + wall opening. Orientation
+    // is resolved once, against the clean architectural outlines (wall faces +
+    // room + corridor polygons), so the swing sits ALONG its wall — not across a
+    // wall end-cap — and the opening cutter uses the very same wall direction.
+    const interior = apartmentInterior(converted);
+    const orientBoundaries: Point2D[][] = [
+      ...wallRings,
+      ...converted.map((r) => r.points),
+      ...contextAreas.map((c) => c.points),
+    ];
+    const entrances: EntranceDoor[] = (record.entrance ?? [])
+      .filter((e) => Array.isArray(e?.point) && e.point.length === 2)
+      .map((e) => {
+        const raw = translate(e.point);
+        const o = orientToNearestEdge(raw, orientBoundaries, interior);
+        // Use the point snapped onto its wall so the swing + opening sit on the
+        // wall (dataset entrance centroids can be offset into the corridor).
+        return o
+          ? { point: o.snap, width: e.width, wallDir: o.wallDir, inward: o.inward, wallA: o.wallA, wallB: o.wallB }
+          : null;
+      })
+      .filter((e): e is EntranceDoor => e !== null);
+
     let gappedWalls = wallRings;
     try {
-      gappedWalls = cutDoorwaysInWalls(wallRings, converted);
+      gappedWalls = cutOpeningsInWalls(wallRings, converted, entrances);
     } catch {
       gappedWalls = wallRings;
     }
@@ -2667,6 +2940,7 @@ export default function App() {
     setRooms(converted);
     setDatasetContext(contextAreas);
     setDatasetWalls(gappedWalls);
+    setDatasetEntrances(entrances);
     setFurnishedRooms([]);
     setSelectedRoomId(null);
     setSelectedFurnitureKey(null);
@@ -2916,6 +3190,7 @@ export default function App() {
           transform={transform}
           datasetContext={datasetContext}
           datasetWalls={datasetWalls}
+          datasetEntrances={datasetEntrances}
           showWalls={showWalls}
           onCalibrationClick={handleScaleCalibrationClick}
           onCalibrationMove={(p) => setScaleCalibration((c) => (c.p1 ? { ...c, cursor: p } : c))}
