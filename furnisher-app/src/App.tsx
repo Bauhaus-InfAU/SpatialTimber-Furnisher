@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
 import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
-import type { PlacedFurniture, StepOptions, PlacementOptions } from "@engine/types";
+import type { PlacedFurniture, StepOptions, PlacementOption, PlacementOptions } from "@engine/types";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
@@ -736,13 +736,60 @@ function dedupeRooms(rooms: DrawnRoom[]) {
 // identity, type, and rounded geometry (points/doors/windows) plus the pipeline
 // config. Deliberately EXCLUDES furnishedRooms so writing furniture cannot
 // re-trigger the auto-furnish effect (which would loop).
+//
+// Each room's geometry is normalised relative to its own first vertex, so the
+// signature captures SHAPE only, not absolute position. Moving a whole room
+// (translation) therefore leaves the signature unchanged → the memoised value
+// stays equal → the auto-furnish effect does not re-run. The placement is kept
+// and translated along with the room (see handleMoveRoom). Reshaping a room
+// (vertex/edge drag) does change the normalised geometry → re-furnish as usual.
 function computeLayoutSignature(rooms: DrawnRoom[], config: PipelineConfig): string {
   const r = (n: number) => n.toFixed(2);
-  const pts = (list: Point2D[]) => list.map((p) => `${r(p.x)},${r(p.y)}`).join("|");
+  const rel = (list: Point2D[], ox: number, oy: number) =>
+    list.map((p) => `${r(p.x - ox)},${r(p.y - oy)}`).join("|");
   const roomsSig = rooms
-    .map((room) => `${room.id}:${room.type}:${pts(room.points)}:${pts(room.doors)}:${pts(room.windows)}`)
+    .map((room) => {
+      const o = room.points[0] ?? { x: 0, y: 0 };
+      return `${room.id}:${room.type}:${rel(room.points, o.x, o.y)}:${rel(room.doors, o.x, o.y)}:${rel(room.windows, o.x, o.y)}`;
+    })
     .join(";");
   return `${roomsSig}#${JSON.stringify(config)}`;
+}
+
+// ─── Placement translation (keep furniture when a room is only moved) ──────────
+// A placement is stored in absolute coordinates. When a room is translated (not
+// reshaped) we shift its existing placement by the same delta instead of
+// re-running the pipeline, so the furniture layout is preserved exactly.
+
+function translatePlaced(p: PlacedFurniture, dx: number, dy: number): PlacedFurniture {
+  const t = (pt: readonly [number, number]): [number, number] => [pt[0] + dx, pt[1] + dy];
+  const tl = (list: readonly [number, number][]): [number, number][] => list.map(t);
+  return {
+    ...p,
+    transformedGeometry: p.transformedGeometry.map((g) => ({ ...g, points: tl(g.points) })),
+    transformedBbox: tl(p.transformedBbox),
+    transformedSmallBbox: tl(p.transformedSmallBbox),
+    wallSegment: [t(p.wallSegment[0]), t(p.wallSegment[1])],
+    smallCutout: tl(p.smallCutout),
+    largeCutout: tl(p.largeCutout),
+  };
+}
+
+function translateOption(o: PlacementOption, dx: number, dy: number): PlacementOption {
+  return { ...o, placed: translatePlaced(o.placed, dx, dy) };
+}
+
+function translateStep(s: StepOptions, dx: number, dy: number): StepOptions {
+  return {
+    ...s,
+    allOptions: s.allOptions.map((o) => translateOption(o, dx, dy)),
+    selected: s.selected ? translateOption(s.selected, dx, dy) : null,
+  };
+}
+
+function translateFurnishedRoom(r: FurnishedRoomResult, dx: number, dy: number): FurnishedRoomResult {
+  if (dx === 0 && dy === 0) return r;
+  return { ...r, steps: r.steps.map((s) => translateStep(s, dx, dy)) };
 }
 
 // ─── Pipeline builder helpers ─────────────────────────────────────────────────
@@ -2609,12 +2656,22 @@ export default function App() {
   // room state (so the layout signature changes) — it never furnishes directly;
   // Feature B's debounced effect re-furnishes once the drag settles.
   function handleMoveRoom(roomId: string, newPoints: Point2D[], newDoors: Point2D[], newWindows: Point2D[]) {
+    // A room-body drag is a pure translation. Shift the room's existing
+    // placement by the same delta so the furniture is preserved and follows the
+    // room — no re-furnish. The delta is measured against the room's current
+    // first vertex (same render as the furniture we translate, so consistent).
+    const moved = rooms.find((r) => r.id === roomId);
+    const base = moved?.points[0];
+    const dx = base && newPoints[0] ? newPoints[0].x - base.x : 0;
+    const dy = base && newPoints[0] ? newPoints[0].y - base.y : 0;
     setRooms((current) =>
       current.map((room) =>
         room.id === roomId ? { ...room, points: newPoints, doors: newDoors, windows: newWindows } : room,
       ),
     );
-    setFurnishedRooms((current) => current.filter((r) => r.roomId !== roomId));
+    setFurnishedRooms((current) =>
+      current.map((r) => (r.roomId === roomId ? translateFurnishedRoom(r, dx, dy) : r)),
+    );
   }
 
   // Greedy best-first: for each step in sequence, try every available option
