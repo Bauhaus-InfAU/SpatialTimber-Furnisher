@@ -83,14 +83,20 @@ function pointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
 // (so plain collinear-removal misses them) yet they fragment a wall into short
 // pieces and invent fake corners with ~0.1 m arms — which defeats corner-based
 // furniture placement even in a visually rectangular room. We therefore:
-//   1. collapse any edge shorter than `minEdge` (merge its endpoints), then
-//   2. drop vertices whose perpendicular deviation from their neighbours is
+//   1. collapse any edge shorter than `minEdge` (merge its endpoints),
+//   2. straighten walls that are within `angTolDeg` of axis-aligned so a
+//      column/notch jog becomes one clean straight wall (and furniture placed
+//      against it is not left slightly rotated), then
+//   3. drop vertices whose perpendicular deviation from their neighbours is
 //      below `collinearTol`.
-// Both loops stop at a quad so a genuine rectangle can never be over-collapsed.
+// The collapse and collinear loops stop at a quad so a genuine rectangle can
+// never be over-collapsed. Genuinely diagonal walls (> angTolDeg off axis) are
+// left untouched, so real non-orthogonal rooms are preserved.
 export function simplifyPolygon(
   poly: Point2D[],
   minEdge = 0.15,
   collinearTol = 0.02,
+  angTolDeg = 6,
 ): Point2D[] {
   if (poly.length < 4) return poly;
   let pts: Point2D[] = poly.map((p) => [p[0], p[1]]);
@@ -105,6 +111,28 @@ export function simplifyPolygon(
         pts.splice((i + 1) % pts.length, 1);
         changed = true;
         break;
+      }
+    }
+  }
+
+  // Orthogonal snap: any edge within angTolDeg of horizontal/vertical is forced
+  // exactly axis-aligned (both endpoints share the averaged coordinate). Rooms
+  // arrive in a canonical frame with the dominant wall on the x-axis, so this
+  // removes the residual ~1° tilt left by wall-thickness noise and midpoint
+  // collapse — the cause of slightly-rotated furniture. A couple of passes
+  // converge for a rectilinear ring; truly angled edges are skipped.
+  const tan = Math.tan((angTolDeg * Math.PI) / 180);
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < pts.length; i++) {
+      const j = (i + 1) % pts.length;
+      const dx = pts[j][0] - pts[i][0], dy = pts[j][1] - pts[i][1];
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      if (adx > 1e-9 && ady <= adx * tan) {          // near-horizontal → level y
+        const y = (pts[i][1] + pts[j][1]) / 2;
+        pts[i][1] = y; pts[j][1] = y;
+      } else if (ady > 1e-9 && adx <= ady * tan) {   // near-vertical → level x
+        const x = (pts[i][0] + pts[j][0]) / 2;
+        pts[i][0] = x; pts[j][0] = x;
       }
     }
   }
@@ -731,7 +759,12 @@ function placeKitchenVariant(
     let result = fullLen;
     for (const door of doors) {
       const toDoor = sub(door, cornerPt);
-      if (Math.abs(dot(toDoor, perpCCW(armDir))) >= 0.15) continue;
+      // Perpendicular tolerance must exceed the wall thickness: a door on this
+      // wall has its centroid offset ~half the wall (~0.16 m) from the interior
+      // face, plus the 0.4 m door-assignment slack. 0.35 m catches doors on the
+      // arm's own wall while staying well clear of the opposite wall, so the
+      // counter arm is always cut before a doorway (never overruns it).
+      if (Math.abs(dot(toDoor, perpCCW(armDir))) >= 0.35) continue;
       const proj     = dot(toDoor, armDir);
       const gapStart = proj - dw / 2;
       if (gapStart <= 0) return 0;
@@ -1066,13 +1099,12 @@ export function getAllPlacements(
 
   const isKitchen = entry.category === "Kitchen";
 
-  // Kitchen counters are placed RIGID, like every other piece of furniture:
-  // on a non-orthogonal corner we do NOT bend the counter to follow the two
-  // walls (which sheared the geometry and could push it outside the room).
-  // Rigid corner placement (placeCornerVariant) only accepts near-square
-  // corners and leaves a small gap on an angled wall — the accepted trade-off.
-  // The legacy wall-following L-counter placer is retained but disabled here.
-  const KITCHEN_BEND_ON_ANGLED_CORNERS = false;
+  // Kitchen counters BEND to follow their two walls (a fitted counter is not a
+  // rigid block — it runs along whatever the walls do, including non-90° corners).
+  // This places ~15 pp more kitchens than the rigid corner-or-straight fallback
+  // and reads as a realistic counter. The rigid path (placeCornerVariant +
+  // straight-wall run) is retained below for reference / non-kitchen corner pieces.
+  const KITCHEN_BEND_ON_ANGLED_CORNERS = true;
 
   const placeOne = (variant: FurnitureVariant, vi: number): PlacementOption[] => {
     if (isCornerVariant(variant)) {

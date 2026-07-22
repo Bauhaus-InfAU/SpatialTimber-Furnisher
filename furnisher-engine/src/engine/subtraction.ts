@@ -124,6 +124,20 @@ export function subtractPolygon(poly: Point2D[], cutout: Point2D[]): Point2D[] {
 }
 
 /**
+ * Subtract several cutouts from `poly` and return the outer ring of EVERY
+ * resulting polygon (not just the largest). Needed when a cut can split one
+ * polygon into several pieces — e.g. punching a door opening through the middle
+ * of a wall leaves the wall in two parts, both of which must be kept.
+ */
+export function subtractPolygonAll(poly: Point2D[], cutouts: Point2D[][]): Point2D[][] {
+  if (cutouts.length === 0) return [poly];
+  const result = difference(toClipPoly(poly), ...cutouts.map(toClipPoly)) as MultiPolygon;
+  return result
+    .map((p) => p[0] as Point2D[])
+    .filter((ring) => ring && ring.length >= 3);
+}
+
+/**
  * Computes updated room polygons after subtracting one placed furniture piece.
  *
  *   roomFull — room_polygon − smallCutout

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
-import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, scoreRoom } from "@engine/index";
+import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
 import type { PlacedFurniture, StepOptions, PlacementOptions } from "@engine/types";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
@@ -367,6 +367,80 @@ function distPointToPolygonBoundary(pt: Point2D, polygon: Point2D[]): number {
     if (d < min) min = d;
   }
   return min;
+}
+
+// ─── Doorway wall cutting ──────────────────────────────────────────────────────
+// Cut real openings OUT of the dataset wall thickness polygons at each door so
+// the wall itself has a clean gap with proper jamb ends (architectural plan look),
+// instead of overlaying paper rectangles. Done once at load; the resulting rings
+// render unchanged through DatasetWallLayer.
+
+const DOOR_CUTTER_MARGIN = 0.04;  // extra width so the opening fully clears the jamb
+const DOOR_CUTTER_HALF_DEPTH = 0.30; // half-depth across wall (0.6 m total, over-crosses any wall)
+
+/** Build one door-opening cutter rectangle (as engine tuples) for a door point,
+ *  aligned to the room's nearest polygon edge. Returns null for degenerate edges. */
+function buildDoorCutter(room: DrawnRoom, door: Point2D): [number, number][] | null {
+  if (room.points.length < 2) return null;
+  // Nearest room-polygon edge to the door point.
+  let wallA = room.points[0];
+  let wallB = room.points[1];
+  let minDistance = Infinity;
+  for (let i = 0; i < room.points.length; i++) {
+    const a = room.points[i];
+    const b = room.points[(i + 1) % room.points.length];
+    const candidate = nearestPointOnSegment(door, a, b);
+    if (candidate.distance < minDistance) {
+      minDistance = candidate.distance;
+      wallA = a;
+      wallB = b;
+    }
+  }
+  const wallDir = normalizeVector({ x: wallB.x - wallA.x, y: wallB.y - wallA.y });
+  if (wallDir.x === 0 && wallDir.y === 0) return null;
+  const n = perpCounterClockwise(wallDir);
+  const halfW = (roomDoorWidth(room.type) + DOOR_CUTTER_MARGIN) / 2;
+  const along = scalePoint(wallDir, halfW);
+  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  // Corners: door ± wallDir*(width/2) ± n*halfDepth.
+  const corners = [
+    addPoint(addPoint(door, along), across),
+    addPoint(addPoint(door, scalePoint(along, -1)), across),
+    addPoint(addPoint(door, scalePoint(along, -1)), scalePoint(across, -1)),
+    addPoint(addPoint(door, along), scalePoint(across, -1)),
+  ];
+  return corners.map(toEnginePoint);
+}
+
+/** Cut door openings out of the wall thickness rings. For each wall ring, the
+ *  boolean difference against all door cutters yields the wall with real gaps at
+ *  doorways (a mid-span cut splits the ring into two — both kept). If subtraction
+ *  throws or returns nothing for a ring, that ring is kept uncut so a robustness
+ *  hiccup never deletes a wall. */
+function cutDoorwaysInWalls(wallRings: Point2D[][], rooms: DrawnRoom[]): Point2D[][] {
+  const cutters: [number, number][][] = [];
+  for (const room of rooms) {
+    for (const door of room.doors) {
+      const c = buildDoorCutter(room, door);
+      if (c) cutters.push(c);
+    }
+  }
+  if (!cutters.length) return wallRings;
+
+  const gapped: Point2D[][] = [];
+  for (const ring of wallRings) {
+    try {
+      const result = subtractPolygonAll(ring.map(toEnginePoint), cutters);
+      if (result.length) {
+        for (const r of result) gapped.push(r.map(([x, y]) => ({ x, y })));
+      } else {
+        gapped.push(ring); // subtraction erased everything — keep original
+      }
+    } catch {
+      gapped.push(ring); // robustness fallback — keep the wall uncut
+    }
+  }
+  return gapped;
 }
 
 // ─── Shared-door display ownership ─────────────────────────────────────────────
@@ -2576,12 +2650,23 @@ export default function App() {
       .filter((ring) => Array.isArray(ring) && ring.length >= 3)
       .map((ring) => ring.map(translate));
 
+    // Cut real door openings out of the wall rings so each doorway is a clean gap
+    // with proper jamb ends (baked in at load — render is unchanged). Wrapped in a
+    // try/catch so a bad apartment can never break loading; on any failure we fall
+    // back to the uncut wall rings.
+    let gappedWalls = wallRings;
+    try {
+      gappedWalls = cutDoorwaysInWalls(wallRings, converted);
+    } catch {
+      gappedWalls = wallRings;
+    }
+
     // 3. Replace the drawing state (background images are left untouched).
     resetScaleCalibration();
     resetRoomDraft();
     setRooms(converted);
     setDatasetContext(contextAreas);
-    setDatasetWalls(wallRings);
+    setDatasetWalls(gappedWalls);
     setFurnishedRooms([]);
     setSelectedRoomId(null);
     setSelectedFurnitureKey(null);

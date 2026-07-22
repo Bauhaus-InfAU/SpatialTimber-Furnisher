@@ -28,6 +28,28 @@ function roomNameToSection(name: RoomName): string {
   return name;
 }
 
+// ─── Strict clearance rule (ground truth, shared by every consumer) ──────────
+//
+// Subtracting each placed piece's cutouts stops a NEW piece's footprint from
+// landing on a prior footprint or inside a prior clearance zone. It does NOT
+// stop a new piece's *clearance* zone (largeBbox) from engulfing an already
+// placed piece's *footprint* — e.g. a freestanding dining table dropped on top
+// of the sofa. This axis-aligned overlap test lets the pipeline reject those
+// options so the engine never returns an overlapping layout (previously this
+// lived only in the Rhino CLI, so the app — a pure consumer — didn't get it).
+function aabbOverlap(pts1: Point2D[], pts2: Point2D[]): boolean {
+  if (!pts1.length || !pts2.length) return false;
+  const xs1 = pts1.map((p) => p[0]), ys1 = pts1.map((p) => p[1]);
+  const xs2 = pts2.map((p) => p[0]), ys2 = pts2.map((p) => p[1]);
+  const eps = 1e-3; // 1 mm — don't reject pieces that merely share a wall edge
+  return (
+    Math.max(...xs1) > Math.min(...xs2) + eps &&
+    Math.max(...xs2) > Math.min(...xs1) + eps &&
+    Math.max(...ys1) > Math.min(...ys2) + eps &&
+    Math.max(...ys2) > Math.min(...ys1) + eps
+  );
+}
+
 // ─── Pipeline runner ──────────────────────────────────────────────────────────
 
 /**
@@ -134,6 +156,7 @@ export function runRoomPipelineAt(
 
   const resultSteps: StepOptions[] = [];
   const warnings:    string[]      = [];
+  const placedSmallBboxes: Point2D[][] = []; // footprints placed so far (strict rule)
 
   for (let i = 0; i < steps.length; i++) {
     const alternatives = steps[i];
@@ -164,7 +187,15 @@ export function runRoomPipelineAt(
       edgePolygon:      roomRdcChain,
     };
 
-    const allOptions = getAllPlacements(room, entry, placementOpts);
+    const rawOptions = getAllPlacements(room, entry, placementOpts);
+
+    // Strict clearance: drop options whose clearance zone would engulf an
+    // already-placed footprint (fall back to raw only if that leaves nothing,
+    // so a piece is never silently lost to the filter).
+    const strict = rawOptions.filter(
+      (opt) => !placedSmallBboxes.some((prev) => aabbOverlap(opt.placed.transformedBbox as Point2D[], prev)),
+    );
+    const allOptions = strict.length > 0 ? strict : rawOptions;
 
     if (allOptions.length === 0) {
       warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
@@ -183,6 +214,7 @@ export function runRoomPipelineAt(
 
     resultSteps.push({ furnitureName: resolvedName, allOptions, selectedIndex, selected });
 
+    placedSmallBboxes.push(selected.placed.transformedSmallBbox as Point2D[]);
     roomFullChain = subtractPolygon(roomFullChain, selected.placed.smallCutout);
     roomRdcChain  = subtractPolygon(roomRdcChain,  selected.placed.largeCutout);
   }

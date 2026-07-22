@@ -140,8 +140,8 @@ footer ul { padding-left: 18px; }
 <section class="finding">
   <div class="fnum">FINDING 1</div>
   <h2>Most apartments furnish well — the tail is thin but real</h2>
-  <p class="take">Half of all apartments score above <strong>84</strong>, and 3.4% reach a perfect 100.
-  But roughly 1 in 27 falls below 60 — apartments where a substantial share of the floor area
+  <p class="take">Half of all apartments score above <strong>85</strong>, and 3.4% reach a perfect 100.
+  But roughly 1 in 42 falls below 60 — apartments where a substantial share of the floor area
   resists standard furniture placement.</p>
   <div class="panel"><h3>Apartments by score (bins of 5)</h3><div class="chart" id="c-hist"></div></div>
   <details class="tbl" id="t-hist"><summary>Table view</summary></details>
@@ -151,7 +151,7 @@ footer ul { padding-left: 18px; }
   <div class="fnum">FINDING 2</div>
   <h2>Kitchens are the bottleneck — bedrooms are almost never the problem</h2>
   <p class="take">Sleeping rooms nearly always furnish (children's rooms average <strong>97</strong>, bedrooms
-  <strong>93</strong>). Kitchens average just <strong>51</strong> — in <strong>40%</strong> of them the engine finds
+  <strong>93</strong>). Kitchens average just <strong>53</strong> — in <strong>39%</strong> of them the engine finds
   <em>no valid placement at all</em> for the kitchen block. Small WCs are the second weak spot
   (23% unfurnishable: toilet + sink don't fit together).</p>
   <div class="panelrow">
@@ -193,7 +193,7 @@ footer ul { padding-left: 18px; }
   <div class="fnum">FINDING 5</div>
   <h2>Complex room shapes cost points — but only where furniture hugs the walls</h2>
   <p class="take">Comparing rooms of the <em>same size</em>: a non-orthogonal kitchen of 10–15&nbsp;m² scores
-  <strong>16 points lower</strong> than a rectangular one; a complex-shaped bedroom loses ≈<strong>11
+  <strong>11 points lower</strong> than a rectangular one; a complex-shaped bedroom (10–15&nbsp;m²) loses ≈<strong>16
   points</strong>. Living rooms are indifferent to shape — sofa and dining groups are flexible, so only
   size matters there. Slanted walls are expensive exactly where fitted furniture (kitchen runs,
   wardrobes) needs straight wall segments.</p>
@@ -292,7 +292,7 @@ function hover(e, value, label) {
   const kitchen = DATA.categories["Kitchen"];
   const items = [
     { lbl: "Apartments scored", val: fmt(t.apartments), note: fmt(t.unique) + " unique layouts (26% duplicates)" },
-    { lbl: "Median apartment score", val: "84", note: "area-weighted, 0–100" },
+    { lbl: "Median apartment score", val: "85", note: "area-weighted, 0–100" },
     { lbl: "Rooms evaluated", val: fmt(t.rooms), note: "6 room types, corridors excluded" },
     { lbl: "Kitchens unfurnishable", val: kitchen.zero_pct + "%", note: "no valid kitchen-block placement" },
   ];
@@ -341,9 +341,9 @@ function makeTable(host, header, rows) {
     if (b % 10 === 0) txt(s, mL + i * bw + bw / 2, H - 8, "tick", b, "middle");
   });
   // median annotation
-  const medX = mL + ((84 - bins[0][0]) / 5) * bw;
+  const medX = mL + ((85 - bins[0][0]) / 5) * bw;
   el("line", { x1: medX, x2: medX, y1: mT, y2: mT + ph, class: "refline", "stroke-dasharray": "" }, s);
-  txt(s, medX + 6, mT + 12, "anno", "median 84");
+  txt(s, medX + 6, mT + 12, "anno", "median 85");
   $("c-hist").appendChild(s);
   makeTable($("t-hist"), ["score bin", "apartments"], bins.map(([b, n]) => [`${b}–${b === 100 ? 100 : b + 4}`, fmt(n)]));
 })();

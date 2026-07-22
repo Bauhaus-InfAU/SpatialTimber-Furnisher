@@ -102,6 +102,55 @@ def remove_collinear(pts, cross_tol=0.002):
     return pts
 
 
+def collapse_short_edges(pts, min_edge=0.15):
+    """Collapse edges shorter than min_edge (merge endpoints to midpoint).
+    Mirrors the engine's simplifyPolygon so stored polygons match what the
+    engine furnishes. Stops at a quad so a rectangle is never over-collapsed."""
+    pts = [list(p) for p in pts]
+    changed = True
+    while changed and len(pts) > 4:
+        changed = False
+        for i in range(len(pts)):
+            a, b = pts[i], pts[(i + 1) % len(pts)]
+            if math.dist(a, b) < min_edge:
+                pts[i] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+                del pts[(i + 1) % len(pts)]
+                changed = True
+                break
+    return [tuple(p) for p in pts]
+
+
+def ortho_snap(pts, ang_tol_deg=6):
+    """Force edges within ang_tol_deg of an axis to be exactly axis-aligned.
+    Requires the canonical frame (dominant wall on the x-axis). Mirrors the
+    engine so a jogged/near-axis wall becomes one straight line."""
+    pts = [list(p) for p in pts]
+    tan = math.tan(math.radians(ang_tol_deg))
+    for _ in range(3):
+        for i in range(len(pts)):
+            j = (i + 1) % len(pts)
+            dx, dy = pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]
+            adx, ady = abs(dx), abs(dy)
+            if adx > 1e-9 and ady <= adx * tan:
+                y = (pts[i][1] + pts[j][1]) / 2
+                pts[i][1] = y; pts[j][1] = y
+            elif ady > 1e-9 and adx <= ady * tan:
+                x = (pts[i][0] + pts[j][0]) / 2
+                pts[i][0] = x; pts[j][0] = x
+    return [tuple(p) for p in pts]
+
+
+def simplify_polygon(pts):
+    """Engine-matching simplification for the CANONICAL-frame polygon:
+    collapse short-edge noise, snap near-axis walls straight, drop collinear."""
+    if len(pts) < 4:
+        return pts
+    pts = collapse_short_edges(dedupe_vertices(pts))
+    pts = ortho_snap(pts)
+    pts = remove_collinear(pts)
+    return pts
+
+
 def signed_area(pts):
     s = 0.0
     for i in range(len(pts)):
@@ -272,9 +321,14 @@ def process_apartment(bfa, ent, stats):
         poly = a["polygon"]
         windows = [w for w in ent["windows"]
                    if dist_point_to_polygon(w, poly) <= WINDOW_ASSIGN_DIST]
+        # Simplify in the canonical frame with the SAME algorithm the engine uses
+        # (collapse noise, ortho-snap, drop collinear) so the stored polygon is
+        # exactly what the engine furnishes — the app then renders what it places,
+        # and the dedup signature is noise-invariant.
+        poly_rot = simplify_polygon(list(map(rot, poly)))
         rooms.append({
             "name": name,
-            "polygon": [[round(x, 3), round(y, 3)] for x, y in map(rot, poly)],
+            "polygon": [[round(x, 3), round(y, 3)] for x, y in poly_rot],
             "windows": [[round(x, 3), round(y, 3)] for x, y in map(rot, windows)],
             "subtype": a["subtype"],
             "area": round(a["area"], 3),
@@ -302,7 +356,7 @@ def process_apartment(bfa, ent, stats):
             continue
         context.append({
             "subtype": subtype,
-            "polygon": [[round(x, 3), round(y, 3)] for x, y in map(rot, poly)],
+            "polygon": [[round(x, 3), round(y, 3)] for x, y in simplify_polygon(list(map(rot, poly)))],
         })
 
     # Display-only wall thickness polygons: same frame, cm precision. NOT cleaned
