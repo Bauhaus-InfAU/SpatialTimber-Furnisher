@@ -314,14 +314,142 @@ button {
 
 /* the side panel — a column of chamfered cards floating on the oat ground,
    with the rail-head eyebrow sitting on the bare ground above them */
-.sidebar {
+/* The left column: a fixed-width rail holding the view-tab bar plus whichever
+   panel (Trace & Furnish sidebar or Explore dataset) is active. */
+.rail {
   display: flex;
   flex-direction: column;
   gap: 11px;
   width: 340px;
   flex-shrink: 0;
   min-height: 0;
+}
+
+.view-tabs {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--st-r-md);
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.view-tab-btn {
+  flex: 1;
+  height: 34px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+
+.view-tab-btn:last-child {
+  border-right: none;
+}
+
+.view-tab-btn.active {
+  background: var(--ink-tint);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: visible;
+}
+
+/* ─── Explore dataset tab ────────────────────────────────────────────────────── */
+
+.explore-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-right: 2px;
+}
+
+.explore-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+
+.explore-loaded-note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 0 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.explore-reload {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: auto;
+}
+
+.nf-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nf-cohort-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--st-r-md);
+  background: var(--ink-tint);
+  border: 1px solid var(--accent);
+}
+
+.nf-cohort-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.nf-cohort-label {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.nf-cohort-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.nf-cohort-clear {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 11.5px;
+  cursor: pointer;
+  flex: none;
 }
 
 .sidebar-header {
@@ -675,6 +803,53 @@ button {
   transform: translateX(9px);
 }
 
+/* ─── Grid snapping ────────────────────────────────────────────────────────── */
+
+.grid-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  margin-left: -31px;
+  width: calc(100% + 31px);
+}
+
+.grid-snap-inline {
+  margin-left: 0;
+}
+
+.grid-step-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  opacity: 0.45;
+  transition: opacity 200ms;
+}
+
+.grid-controls.active .grid-step-field {
+  opacity: 1;
+}
+
+.grid-step-label,
+.grid-step-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.grid-step-input {
+  width: 62px;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
 /* ─── Secondary actions (door / upload) ────────────────────────────────────── */
 
 .step-secondary-actions {
@@ -882,6 +1057,10 @@ button {
   stroke: rgba(20, 20, 19, 0.10);
   stroke-width: 0.025;
   vector-effect: non-scaling-stroke;
+}
+
+.grid-lines .grid-major {
+  stroke: rgba(20, 20, 19, 0.20);
 }
 
 .origin-point {

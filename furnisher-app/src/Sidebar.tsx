@@ -4,8 +4,7 @@ import { ROOM_TOOLS } from "./types";
 import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef } from "./types";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
-import { NeufertBrowser } from "./NeufertBrowser";
-import type { NeufertRecord } from "./NeufertBrowser";
+import { AffordToggles } from "./AffordToggles";
 
 type SidebarProps = {
   rooms: DrawnRoom[];
@@ -15,6 +14,8 @@ type SidebarProps = {
   backgroundImages: BackgroundImage[];
   drawMode: "rectangle" | "lines";
   orthoMode: boolean;
+  snapToGrid: boolean;
+  gridStep: number;
   aptType: number;
   pipelineConfig: PipelineConfig;
   onSelectTool: (tool: ToolId) => void;
@@ -29,12 +30,13 @@ type SidebarProps = {
   onToggleWalls: () => void;
   onSetDrawMode: (mode: "rectangle" | "lines") => void;
   onToggleOrtho: () => void;
+  onToggleSnapToGrid: () => void;
+  onSetGridStep: (step: number) => void;
   onSetAptType: (type: number | null) => void;
   onUpdateRoomSteps: (section: string, steps: PipelineStepConfig[]) => void;
   onImageSelect: (id: string) => void;
   onImageDelete: (id: string) => void;
   onImageUpdate: (id: string, patch: Partial<BackgroundImage>) => void;
-  onLoadDatasetApartment: (record: NeufertRecord) => void;
 };
 
 // ─── Pipeline step card ───────────────────────────────────────────────────────
@@ -560,18 +562,66 @@ function RoomSectionPanel({
   );
 }
 
+// ─── Grid snap control ────────────────────────────────────────────────────────
+// The step field keeps its own draft text so intermediate states ("0.", "0,6")
+// stay editable; it commits on blur / Enter and re-syncs if the prop changes.
+
+function GridSnapControl({
+  snapToGrid, gridStep, onToggleSnapToGrid, onSetGridStep,
+}: {
+  snapToGrid: boolean;
+  gridStep: number;
+  onToggleSnapToGrid: () => void;
+  onSetGridStep: (step: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(gridStep));
+
+  useEffect(() => { setDraft(String(gridStep)); }, [gridStep]);
+
+  function commit() {
+    const parsed = Number.parseFloat(draft.replace(",", "."));
+    if (Number.isFinite(parsed) && parsed > 0) onSetGridStep(parsed);
+    else setDraft(String(gridStep));
+  }
+
+  return (
+    <div className={`grid-controls${snapToGrid ? " active" : ""}`}>
+      <div className="ortho-inline grid-snap-inline">
+        <span className="ortho-label">Snap to grid</span>
+        <button type="button" className={`ortho-toggle${snapToGrid ? " active" : ""}`}
+          onClick={onToggleSnapToGrid} title="Snap traced points to grid vertices"
+          aria-pressed={snapToGrid} />
+      </div>
+      <label className="grid-step-field">
+        <span className="grid-step-label">Step</span>
+        <input
+          type="text"
+          inputMode="decimal"
+          className="grid-step-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+          title="Grid step in metres"
+        />
+        <span className="grid-step-unit">m</span>
+      </label>
+    </div>
+  );
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 export function Sidebar({
   rooms, furnishedRooms, selectedTool, backgroundImages,
-  drawMode, orthoMode, aptType, pipelineConfig,
+  drawMode, orthoMode, snapToGrid, gridStep, aptType, pipelineConfig,
   onSelectTool, onUploadClick, onReset, onFurnish,
   showTransitionAreas, onToggleTransitionAreas,
   showFailedCandidates, onToggleFailedCandidates,
   showWalls, onToggleWalls,
-  onSetDrawMode, onToggleOrtho, onSetAptType, onUpdateRoomSteps,
+  onSetDrawMode, onToggleOrtho, onToggleSnapToGrid, onSetGridStep,
+  onSetAptType, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
-  onLoadDatasetApartment,
 }: SidebarProps) {
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
 
@@ -617,37 +667,19 @@ export function Sidebar({
         </button>
         <div className="furnish-note">{furnishNote}</div>
         {isFurnished && (
-          <div className="affords">
-            <button
-              type="button"
-              className={`afford${showTransitionAreas ? " active" : ""}`}
-              onClick={onToggleTransitionAreas}
-            >
-              Transition zones
-            </button>
-            <button
-              type="button"
-              className={`afford${showFailedCandidates ? " active" : ""}`}
-              onClick={onToggleFailedCandidates}
-            >
-              Failed pieces
-            </button>
-            <button
-              type="button"
-              className={`afford${showWalls ? " active" : ""}`}
-              onClick={onToggleWalls}
-            >
-              Walls
-            </button>
-          </div>
+          <AffordToggles
+            showTransitionAreas={showTransitionAreas}
+            onToggleTransitionAreas={onToggleTransitionAreas}
+            showFailedCandidates={showFailedCandidates}
+            onToggleFailedCandidates={onToggleFailedCandidates}
+            showWalls={showWalls}
+            onToggleWalls={onToggleWalls}
+          />
         )}
       </div>
 
       <div className="pipeline-steps">
         <div className="pipeline-steps-frame">
-        {/* ── Dataset browser (optional) ── */}
-        <NeufertBrowser onLoadApartment={onLoadDatasetApartment} />
-
         {/* ── 01 Add plan ── */}
         <PipelineStep
           number="01"
@@ -710,6 +742,13 @@ export function Sidebar({
                 onClick={onToggleOrtho} title="Constrain to right angles" aria-pressed={orthoMode} />
             </div>
           </div>
+
+          <GridSnapControl
+            snapToGrid={snapToGrid}
+            gridStep={gridStep}
+            onToggleSnapToGrid={onToggleSnapToGrid}
+            onSetGridStep={onSetGridStep}
+          />
 
 
           <button className={`step-btn primary wide${selectedTool === "doors" ? " active" : ""}`}

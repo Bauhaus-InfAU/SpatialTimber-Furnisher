@@ -21,6 +21,7 @@ import type {
   CustomFurnitureDef,
 } from "./types";
 import { Sidebar } from "./Sidebar";
+import { ExploreTab } from "./ExploreTab";
 import type { NeufertRecord } from "./NeufertBrowser";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -181,6 +182,18 @@ function polygonCentroid(points: Point2D[]): Point2D {
     return { x: points.reduce((s, p) => s + p.x, 0) / n, y: points.reduce((s, p) => s + p.y, 0) / n };
   }
   return { x: cx / (6 * area), y: cy / (6 * area) };
+}
+
+// ─── Grid snapping ────────────────────────────────────────────────────────────
+// Default step is the 625 mm timber module used throughout the project.
+const DEFAULT_GRID_STEP = 0.625;
+const MIN_GRID_STEP = 0.05;
+const MAX_GRID_STEP = 10;
+
+/** Snap a world point to the nearest grid vertex (grid is anchored at origin). */
+function snapPointToGrid(point: Point2D, step: number): Point2D {
+  if (!(step > 0)) return point;
+  return { x: Math.round(point.x / step) * step, y: Math.round(point.y / step) * step };
 }
 
 function constrainToOrthogonal(point: Point2D, anchor: Point2D): Point2D {
@@ -1889,6 +1902,7 @@ function ViewerLayer({
   selectedRoomId,
   selectedTool,
   drawMode,
+  gridStep,
   transform,
   selectedFurnitureKey,
   datasetContext,
@@ -1923,6 +1937,7 @@ function ViewerLayer({
   selectedRoomId: string | null;
   selectedTool: ToolId;
   drawMode: "rectangle" | "lines";
+  gridStep: number;
   transform: ViewerTransform;
   selectedFurnitureKey: FurnitureKey | null;
   datasetContext: DatasetContextArea[];
@@ -1953,16 +1968,23 @@ function ViewerLayer({
   const viewBox = `${transform.centerX - transform.metresAcross / 2} ${transform.centerY - transform.metresAcross / 2} ${transform.metresAcross} ${transform.metresAcross}`;
   const panRef = useRef<{ startClientX: number; startClientY: number; startCenterX: number; startCenterY: number } | null>(null);
 
+  // Grid drawn at the snapping step so what you see is what you snap to. Every
+  // 4th line is emphasised to keep a coarse module readable when zoomed out.
   const gridLines = useMemo(() => {
+    const step = gridStep > 0 ? gridStep : DEFAULT_GRID_STEP;
+    const extent = 100;
+    const count = Math.min(400, Math.floor(extent / step));
     const lines = [];
-    for (let i = -100; i <= 100; i++) {
+    for (let i = -count; i <= count; i++) {
+      const v = i * step;
+      const cls = i % 4 === 0 ? "grid-major" : undefined;
       lines.push(
-        <line key={`x-${i}`} x1={i} y1="-100" x2={i} y2="100" />,
-        <line key={`y-${i}`} x1="-100" y1={i} x2="100" y2={i} />,
+        <line key={`x-${i}`} className={cls} x1={v} y1={-extent} x2={v} y2={extent} />,
+        <line key={`y-${i}`} className={cls} x1={-extent} y1={v} x2={extent} y2={v} />,
       );
     }
     return lines;
-  }, []);
+  }, [gridStep]);
 
   function eventToWorldPoint(clientX: number, clientY: number): Point2D | null {
     const svg = svgRef.current;
@@ -2335,6 +2357,7 @@ const initialTransform: ViewerTransform = { metresAcross: 16, centerX: 0, center
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<HTMLElement>(null);
+  const [viewMode, setViewMode] = useState<"trace" | "explore">("trace");
   const [selectedTool, setSelectedTool] = useState<ToolId>("upload");
   const [lastRoomTool, setLastRoomTool] = useState<RoomToolId>("Bedroom");
   const [isShiftHeld, setIsShiftHeld] = useState(false);
@@ -2349,6 +2372,8 @@ export default function App() {
   const [roomDraft, setRoomDraft] = useState<RoomDraft | null>(null);
   const [drawMode, setDrawMode] = useState<"rectangle" | "lines">("rectangle");
   const [orthoMode, setOrthoMode] = useState(true);
+  const [snapToGrid, setSnapToGrid] = useState(true);
+  const [gridStep, setGridStep] = useState(DEFAULT_GRID_STEP);
   const [furnishedRooms, setFurnishedRooms] = useState<FurnishedRoomResult[]>([]);
   const [furnishError, setFurnishError] = useState<string | null>(null);
   // Feature B: once the user has furnished once, layout edits auto-re-furnish.
@@ -2521,10 +2546,19 @@ export default function App() {
     return constrainToOrthogonal(rawPoint, draft.points[draft.points.length - 1]);
   }
 
-  function handleRoomToolClick(rawPoint: Point2D) {
+  /** Grid snap for tracing input. Applied before the orthogonal constraint —
+   *  that constraint only copies coordinates between two snapped points, so the
+   *  result stays on the grid. */
+  function applyGridSnap(point: Point2D): Point2D {
+    if (!snapToGrid) return point;
+    return snapPointToGrid(point, gridStep);
+  }
+
+  function handleRoomToolClick(rawInput: Point2D) {
     if (!isRoomTool(selectedTool)) return;
     const tool = ROOM_TOOLS.find((t) => t.id === selectedTool);
     if (!tool) return;
+    const rawPoint = applyGridSnap(rawInput);
 
     if (drawMode === "rectangle") {
       if (!roomDraft || roomDraft.type !== selectedTool) {
@@ -2572,7 +2606,8 @@ export default function App() {
     setRoomDraft({ ...roomDraft, points: [...roomDraft.points, point], cursor: point, orthogonal: false });
   }
 
-  function handleRoomPointerMove(rawPoint: Point2D) {
+  function handleRoomPointerMove(rawInput: Point2D) {
+    const rawPoint = applyGridSnap(rawInput);
     setRoomDraft((current) => {
       if (!current) return current;
       const isOrtho = isShiftHeld || orthoMode;
@@ -2597,6 +2632,15 @@ export default function App() {
 
   function handleToggleOrtho() {
     setOrthoMode((v) => !v);
+  }
+
+  function handleToggleSnapToGrid() {
+    setSnapToGrid((v) => !v);
+  }
+
+  function handleSetGridStep(step: number) {
+    if (!Number.isFinite(step)) return;
+    setGridStep(Math.min(MAX_GRID_STEP, Math.max(MIN_GRID_STEP, step)));
   }
 
   function handleDoorClick(point: Point2D) {
@@ -2895,7 +2939,7 @@ export default function App() {
 
   const datasetLoadSeq = useRef(0);
 
-  function handleLoadDatasetApartment(record: NeufertRecord) {
+  function handleLoadDatasetApartment(record: NeufertRecord, opts?: { cohortActive?: boolean }) {
     // 1. Translate all coordinates so the bounding-box min corner sits at (1, 1)
     //    — the canvas prefers positive coordinates.
     const allCoords: [number, number][] = [
@@ -3005,6 +3049,9 @@ export default function App() {
     const nextConfig: PipelineConfig = { ...pipelineConfig, roomOverrides: {} };
     setPipelineConfig(nextConfig);
     setSelectedTool("furnish");
+    // When triaging a cohort from the Explore tab, surface the failing pieces
+    // right away so it's clear WHY this apartment is in the group.
+    if (opts?.cohortActive) setShowFailedCandidates(true);
 
     // 4. Fit the viewer: centre the apartment with ~10% margin on each side.
     //    The SVG viewBox is a square `metresAcross` wide centred on
@@ -3195,39 +3242,74 @@ export default function App() {
   const isFurnished = furnishedRooms.length > 0;
   const computedAptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
 
+  // Shared canvas-view toggles, reused by both tabs (Trace furnish card +
+  // Explore panel).
+  const affords = {
+    showTransitionAreas,
+    onToggleTransitionAreas: () => setShowTransitionAreas((v) => !v),
+    showFailedCandidates,
+    onToggleFailedCandidates: () => setShowFailedCandidates((v) => !v),
+    showWalls,
+    onToggleWalls: () => setShowWalls((v) => !v),
+  };
+
   return (
     <div className="app-root">
       <AppHeader />
       <main className="app-shell">
-      <Sidebar
-        rooms={rooms}
-        furnishedRooms={furnishedRooms}
-        selectedTool={selectedTool}
-        lastRoomTool={lastRoomTool}
-        backgroundImages={backgroundImages}
-        drawMode={drawMode}
-        orthoMode={orthoMode}
-        aptType={computedAptType}
-        pipelineConfig={pipelineConfig}
-        onSelectTool={handleSelectTool}
-        onUploadClick={handleUploadClick}
-        onReset={handleReset}
-        onFurnish={handleFurnishClick}
-        onSetDrawMode={handleSetDrawMode}
-        onToggleOrtho={handleToggleOrtho}
-        onSetAptType={handleSetAptType}
-        onUpdateRoomSteps={handleUpdateRoomSteps}
-        onImageSelect={selectBackgroundImage}
-        onImageDelete={deleteBackgroundImage}
-        onImageUpdate={updateBackgroundImage}
-        onLoadDatasetApartment={handleLoadDatasetApartment}
-        showTransitionAreas={showTransitionAreas}
-        onToggleTransitionAreas={() => setShowTransitionAreas((v) => !v)}
-        showFailedCandidates={showFailedCandidates}
-        onToggleFailedCandidates={() => setShowFailedCandidates((v) => !v)}
-        showWalls={showWalls}
-        onToggleWalls={() => setShowWalls((v) => !v)}
-      />
+      <div className="rail">
+        <div className="view-tabs">
+          <button
+            type="button"
+            className={`view-tab-btn${viewMode === "trace" ? " active" : ""}`}
+            onClick={() => setViewMode("trace")}
+          >
+            Trace &amp; Furnish
+          </button>
+          <button
+            type="button"
+            className={`view-tab-btn${viewMode === "explore" ? " active" : ""}`}
+            onClick={() => setViewMode("explore")}
+          >
+            Explore dataset
+          </button>
+        </div>
+        {viewMode === "trace" ? (
+          <Sidebar
+            rooms={rooms}
+            furnishedRooms={furnishedRooms}
+            selectedTool={selectedTool}
+            lastRoomTool={lastRoomTool}
+            backgroundImages={backgroundImages}
+            drawMode={drawMode}
+            orthoMode={orthoMode}
+            snapToGrid={snapToGrid}
+            gridStep={gridStep}
+            aptType={computedAptType}
+            pipelineConfig={pipelineConfig}
+            onSelectTool={handleSelectTool}
+            onUploadClick={handleUploadClick}
+            onReset={handleReset}
+            onFurnish={handleFurnishClick}
+            onSetDrawMode={handleSetDrawMode}
+            onToggleOrtho={handleToggleOrtho}
+            onToggleSnapToGrid={handleToggleSnapToGrid}
+            onSetGridStep={handleSetGridStep}
+            onSetAptType={handleSetAptType}
+            onUpdateRoomSteps={handleUpdateRoomSteps}
+            onImageSelect={selectBackgroundImage}
+            onImageDelete={deleteBackgroundImage}
+            onImageUpdate={updateBackgroundImage}
+            {...affords}
+          />
+        ) : (
+          <ExploreTab
+            isFurnished={isFurnished}
+            affords={affords}
+            onLoadApartment={handleLoadDatasetApartment}
+          />
+        )}
+      </div>
 
       <section
         ref={viewerRef}
@@ -3244,6 +3326,7 @@ export default function App() {
           selectedRoomId={selectedRoomId}
           selectedTool={selectedTool}
           drawMode={drawMode}
+          gridStep={gridStep}
           transform={transform}
           datasetContext={datasetContext}
           datasetWalls={datasetWalls}

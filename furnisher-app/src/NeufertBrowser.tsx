@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent } from "react";
+import type { KeyboardEvent } from "react";
 
 // ─── Bundle record types (JSONL, produced outside the app) ────────────────────
 
@@ -13,6 +13,10 @@ export type NeufertRoomRecord = {
   area?: number;
 };
 
+/** Per-furnishable-room score, used by the interactive Findings to build
+ *  per-room cohorts (e.g. kitchens scoring 0). Missing on older bundles. */
+export type NeufertPerRoom = { cat: string; area: number; score: number };
+
 export type NeufertMeta = {
   score?: number | null;
   aptType?: number | null;
@@ -20,6 +24,7 @@ export type NeufertMeta = {
   totalArea?: number | null;
   nDuplicates?: number | null;
   nFailedRooms?: number | null;
+  perRoom?: NeufertPerRoom[];
 };
 
 export type NeufertContextArea = {
@@ -43,8 +48,18 @@ export type NeufertRecord = {
   meta?: NeufertMeta;
 };
 
-type SortMode = "id" | "score-asc" | "score-desc" | "area-asc" | "area-desc";
+export type SortMode = "id" | "score-asc" | "score-desc" | "area-asc" | "area-desc";
 type SizeFilter = "all" | 1 | 2 | 3 | 4 | 5;
+
+/** A named subset of the dataset produced by a report finding (or any predicate).
+ *  Held in memory only — single app, file-picker load, nothing to serialize. */
+export type Cohort = {
+  id: string;
+  label: string;
+  predicate: (rec: NeufertRecord) => boolean;
+  /** Ordering within the cohort; defaults to worst-first ("score-asc"). */
+  sort?: SortMode;
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,23 +83,68 @@ function cmpNullable(a: number | null, b: number | null, dir: 1 | -1) {
   return (a - b) * dir;
 }
 
-const PARSE_CHUNK = 2500;
+/** Parse a Neufert bundle (.jsonl) text into records + source label. Chunked so
+ *  the UI stays responsive while parsing ~15k lines. Throws with a line-precise
+ *  message on malformed input. */
+export async function parseNeufertBundle(
+  text: string,
+): Promise<{ records: NeufertRecord[]; source: string }> {
+  const lines = text.split(/\r?\n/);
+  let li = 0;
+  while (li < lines.length && !lines[li].trim()) li++;
+  if (li >= lines.length) throw new Error("The file is empty.");
+
+  let header: unknown;
+  try {
+    header = JSON.parse(lines[li]);
+  } catch {
+    throw new Error("Line 1 is not valid JSON — expected a bundle header.");
+  }
+  const h = header as { type?: unknown; source?: unknown };
+  if (!h || h.type !== "neufert-bundle") {
+    throw new Error('Not a Neufert bundle (header must have "type": "neufert-bundle").');
+  }
+  li++;
+
+  const parsed: NeufertRecord[] = [];
+  const CHUNK = 2500;
+  for (let start = li; start < lines.length; start += CHUNK) {
+    const end = Math.min(lines.length, start + CHUNK);
+    for (let i = start; i < end; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let rec: unknown;
+      try {
+        rec = JSON.parse(line);
+      } catch {
+        throw new Error(`Line ${i + 1} is not valid JSON.`);
+      }
+      const r = rec as NeufertRecord;
+      if (!r || typeof r.id !== "string" || !Array.isArray(r.rooms)) {
+        throw new Error(`Line ${i + 1} is not an apartment record.`);
+      }
+      parsed.push(r);
+    }
+    // Yield so the "Loading…" state stays responsive.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (!parsed.length) throw new Error("The bundle contains no apartments.");
+  return { records: parsed, source: typeof h.source === "string" ? h.source : "" };
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function NeufertBrowser({
+  records,
+  cohort,
   onLoadApartment,
+  onClearCohort,
 }: {
+  records: NeufertRecord[];
+  cohort: Cohort | null;
   onLoadApartment: (record: NeufertRecord) => void;
+  onClearCohort: () => void;
 }) {
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const [open, setOpen] = useState(false);
-  const [records, setRecords] = useState<NeufertRecord[] | null>(null);
-  const [source, setSource] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
   // Filters
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>("all");
   const [areaMin, setAreaMin] = useState("");
@@ -104,99 +164,18 @@ export function NeufertBrowser({
     if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
   }, []);
 
-  // ── Parsing ─────────────────────────────────────────────────────────────────
-
-  function handlePickClick() {
-    fileRef.current?.click();
-  }
-
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    setLoading(true);
-    setLoadError(null);
-    const reader = new FileReader();
-    reader.addEventListener("error", () => {
-      setLoading(false);
-      setLoadError("Could not read the file.");
-    });
-    reader.addEventListener("load", () => {
-      void parseBundle(String(reader.result));
-    });
-    reader.readAsText(file);
-  }
-
-  async function parseBundle(text: string) {
-    try {
-      const lines = text.split(/\r?\n/);
-      let li = 0;
-      while (li < lines.length && !lines[li].trim()) li++;
-      if (li >= lines.length) throw new Error("The file is empty.");
-
-      let header: unknown;
-      try {
-        header = JSON.parse(lines[li]);
-      } catch {
-        throw new Error("Line 1 is not valid JSON — expected a bundle header.");
-      }
-      const h = header as { type?: unknown; source?: unknown };
-      if (!h || h.type !== "neufert-bundle") {
-        throw new Error('Not a Neufert bundle (header must have "type": "neufert-bundle").');
-      }
-      li++;
-
-      const parsed: NeufertRecord[] = [];
-      for (let start = li; start < lines.length; start += PARSE_CHUNK) {
-        const end = Math.min(lines.length, start + PARSE_CHUNK);
-        for (let i = start; i < end; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          let rec: unknown;
-          try {
-            rec = JSON.parse(line);
-          } catch {
-            throw new Error(`Line ${i + 1} is not valid JSON.`);
-          }
-          const r = rec as NeufertRecord;
-          if (!r || typeof r.id !== "string" || !Array.isArray(r.rooms)) {
-            throw new Error(`Line ${i + 1} is not an apartment record.`);
-          }
-          parsed.push(r);
-        }
-        // Yield to the event loop so the "Loading…" state stays responsive.
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-      if (!parsed.length) throw new Error("The bundle contains no apartments.");
-
-      setRecords(parsed);
-      setSource(typeof h.source === "string" ? h.source : "");
-      setSizeFilter("all");
-      setAreaMin("");
-      setAreaMax("");
-      setSort("id");
-      setIndex(1);
-      setIndexInput("1");
-      setHasSelected(false);
-      setIdQuery("");
-      setIdNotFound(false);
-    } catch (error) {
-      setRecords(null);
-      setSource("");
-      setLoadError(error instanceof Error ? error.message : "Failed to parse the bundle.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   // ── Filtering + sorting ─────────────────────────────────────────────────────
 
   const areaMinNum = areaMin.trim() === "" ? null : Number(areaMin);
   const areaMaxNum = areaMax.trim() === "" ? null : Number(areaMax);
 
+  // Effective sort: an active cohort dictates its own order (worst-first by
+  // default) so the user immediately faces the worst cases in the group.
+  const effectiveSort: SortMode = cohort ? cohort.sort ?? "score-asc" : sort;
+
   const filtered = useMemo(() => {
-    if (!records) return [];
     const result = records.filter((r) => {
+      if (cohort && !cohort.predicate(r)) return false;
       const nrooms = nullableNum(r.meta?.nrooms);
       if (sizeFilter !== "all") {
         if (nrooms === null) return false;
@@ -211,9 +190,9 @@ export function NeufertBrowser({
       return true;
     });
 
-    if (sort !== "id") {
-      const dir: 1 | -1 = sort === "score-asc" || sort === "area-asc" ? 1 : -1;
-      const key = sort === "score-asc" || sort === "score-desc"
+    if (effectiveSort !== "id") {
+      const dir: 1 | -1 = effectiveSort === "score-asc" || effectiveSort === "area-asc" ? 1 : -1;
+      const key = effectiveSort === "score-asc" || effectiveSort === "score-desc"
         ? (r: NeufertRecord) => nullableNum(r.meta?.score)
         : (r: NeufertRecord) => nullableNum(r.meta?.totalArea);
       result.sort((a, b) => cmpNullable(key(a), key(b), dir) || a.id.localeCompare(b.id));
@@ -221,7 +200,24 @@ export function NeufertBrowser({
       result.sort((a, b) => a.id.localeCompare(b.id));
     }
     return result;
-  }, [records, sizeFilter, areaMinNum, areaMaxNum, sort]);
+  }, [records, cohort, sizeFilter, areaMinNum, areaMaxNum, effectiveSort]);
+
+  // When a cohort is picked (from a finding), jump to its worst case on the
+  // canvas immediately — regardless of whether the user had shown anything.
+  const cohortIdRef = useRef<string | null>(cohort?.id ?? null);
+  useEffect(() => {
+    const id = cohort?.id ?? null;
+    if (cohortIdRef.current === id) return;
+    cohortIdRef.current = id;
+    setIndex(1);
+    setIndexInput("1");
+    setIdNotFound(false);
+    if (cohort && filtered.length > 0) {
+      setHasSelected(true);
+      onLoadApartment(filtered[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cohort?.id]);
 
   // Filter changes reset the index to 1 — and re-load the first match only if
   // the user has already loaded something from the browser.
@@ -305,42 +301,21 @@ export function NeufertBrowser({
   ];
 
   return (
-    <div className={`pipeline-step${open ? " open" : ""}`}>
-      <button className="step-header" type="button" onClick={() => setOpen((v) => !v)}>
-        <span className="step-number">◈</span>
-        <span className="step-title">Dataset browser</span>
-        <span className="step-meta">{records ? fmtInt(records.length) : "optional"}</span>
-        <span className="step-toggle">{open ? "∧" : "∨"}</span>
-      </button>
-
-      {open && (
-        <div className="step-body">
-          <p className="step-description">Optional — browse Neufert 4.0 apartments instead of tracing a plan.</p>
-
-          <div>
-            <button className="step-btn primary wide" type="button" onClick={handlePickClick} disabled={loading}>
-              {loading ? "Loading…" : "Load bundle…"}
-            </button>
-            <input
-              ref={fileRef}
-              className="file-input"
-              type="file"
-              accept=".jsonl"
-              onChange={handleFileChange}
-            />
-            {loadError ? <div className="add-form-error nf-error">{loadError}</div> : null}
-            {records ? (
-              <div className="nf-loaded-note">
-                <span className="mono">{fmtInt(records.length)}</span> apartments loaded
-                {source ? <span className="nf-source"> · {source}</span> : null}
-              </div>
-            ) : null}
+    <div className="nf-browser">
+      {cohort ? (
+        <div className="nf-cohort-chip">
+          <div className="nf-cohort-text">
+            <span className="nf-cohort-label">{cohort.label}</span>
+            <span className="nf-cohort-count">
+              <span className="mono">{fmtInt(count)}</span> apartments · worst-first
+            </span>
           </div>
+          <button type="button" className="nf-cohort-clear" onClick={onClearCohort}>Clear</button>
+        </div>
+      ) : null}
 
-          {records && (
-            <>
-              {/* ── Filters ── */}
-              <div className="nf-filter-row">
+      {/* ── Filters ── */}
+      <div className="nf-filter-row">
                 <span className="apt-type-label">Size</span>
                 <div className="nf-size-buttons">
                   {sizeOptions.map((opt) => (
@@ -462,10 +437,6 @@ export function NeufertBrowser({
                   </div>
                 </>
               )}
-            </>
-          )}
-        </div>
-      )}
     </div>
   );
 }

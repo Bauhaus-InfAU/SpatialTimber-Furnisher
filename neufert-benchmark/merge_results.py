@@ -181,6 +181,13 @@ def main():
                     "totalArea": total_area,
                     "nDuplicates": group_size.get(bfa, 1),
                     "nFailedRooms": len(rooms_res) - len(ok),
+                    # Per-room scores (furnishable rooms only) so the app's
+                    # interactive Findings can build per-room cohorts (e.g.
+                    # kitchens scoring 0) without loading results.jsonl.
+                    "perRoom": [
+                        {"cat": cat_of(rm["name"]), "area": round(rm["area"], 1), "score": rm["score"]}
+                        for rm in ok
+                    ],
                 },
             }, separators=(",", ":")) + "\n")
             n_bundle += 1
