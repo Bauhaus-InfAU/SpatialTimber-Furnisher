@@ -25,7 +25,12 @@ export type RoomToolId = Extract<
  *  engine's RoomName vocabulary has no equivalent and no furniture recipes. */
 export const CIRCULATION_ROOM_TYPES = ["Hall", "Corridor"] as const;
 
-export function isCirculationRoom(type: RoomToolId): boolean {
+export type CirculationRoomId = (typeof CIRCULATION_ROOM_TYPES)[number];
+/** The room types the engine can actually furnish — exactly the ones that have a
+ *  matching RoomName. */
+export type FurnishableRoomId = Exclude<RoomToolId, CirculationRoomId>;
+
+export function isCirculationRoom(type: RoomToolId): type is CirculationRoomId {
   return (CIRCULATION_ROOM_TYPES as readonly string[]).includes(type);
 }
 

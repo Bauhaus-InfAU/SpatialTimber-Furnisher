@@ -10,6 +10,7 @@ import { ROOM_TOOLS, isRoomTool, isCirculationRoom } from "./types";
 import type {
   ToolId,
   RoomToolId,
+  FurnishableRoomId,
   Point2D,
   BackgroundImage,
   ScaleCalibration,
@@ -765,7 +766,9 @@ function computeDoorOwnership(rooms: DrawnRoom[]): Map<string, boolean[]> {
  *  room it opens into. */
 function toEngineRooms(rooms: DrawnRoom[]) {
   let childIndex = 0;
-  return rooms.filter((r) => !isCirculationRoom(r.type)).map((room) => {
+  return rooms
+    .filter((r): r is DrawnRoom & { type: FurnishableRoomId } => !isCirculationRoom(r.type))
+    .map((room) => {
     let name: RoomName;
     if (room.type === "Children") {
       childIndex++;

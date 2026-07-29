@@ -2966,14 +2966,19 @@ button {
   user-select: none;
 }
 
+/* Transparency lives on the LAYER, not the individual rings. Dataset wall
+   polygons overlap each other at every junction; with per-ring alpha each
+   overlap composited twice and showed up as a dark square stub at corners and
+   at the ends of slanted walls. Group opacity renders the rings opaque into one
+   buffer first, then fades that once — so an overlap is indistinguishable from
+   plain wall. */
 .dataset-wall-layer {
   pointer-events: none;
+  opacity: 0.62;
 }
 
 .dataset-wall {
   fill: var(--st-ink-2);            /* dark warm grey — reads clearly as structure */
-  fill-opacity: 0.62;
   stroke: var(--st-ink-2);
   stroke-width: 0.01px;             /* world units (metres) — hairline seam */
-  stroke-opacity: 0.62;
 }
