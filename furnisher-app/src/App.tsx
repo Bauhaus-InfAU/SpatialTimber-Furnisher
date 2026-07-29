@@ -1881,6 +1881,63 @@ type FurnitureDragState = {
   cursor: Point2D;
 };
 
+/** The wall-midpoint grab handle of the selected piece.
+ *
+ *  Rendered in a layer ABOVE every furniture and candidate group, never inside
+ *  the group it belongs to. Each piece paints an invisible `pointer-events:all`
+ *  click target over its footprint, and failed candidates in particular overlap
+ *  heavily (they are the pieces that did not fit) — so a handle drawn inside its
+ *  own group is swallowed by the click target of any piece that happens to come
+ *  later in document order. The handle stays visible, but the pointerdown lands
+ *  on the other piece and the drag never starts. */
+function WallDragHandle({
+  at,
+  room,
+  drag,
+  setDrag,
+  roomId,
+  stepIndex,
+  toWorld,
+  onDrop,
+}: {
+  at: Point2D;
+  room: DrawnRoom;
+  drag: FurnitureDragState | null;
+  setDrag: (next: FurnitureDragState | null | ((d: FurnitureDragState | null) => FurnitureDragState | null)) => void;
+  roomId: string;
+  stepIndex: number;
+  toWorld: (clientX: number, clientY: number) => Point2D | null;
+  onDrop: (snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
+}) {
+  return (
+    <circle
+      cx={at.x} cy={at.y} r="0.13"
+      className="furniture-drag-handle"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        const w = toWorld(e.clientX, e.clientY);
+        if (!w) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDrag({ roomId, stepIndex, cursor: w });
+      }}
+      onPointerMove={(e) => {
+        if (!drag) return;
+        const w = toWorld(e.clientX, e.clientY);
+        if (w) setDrag((d) => (d ? { ...d, cursor: w } : null));
+      }}
+      onPointerUp={(e) => {
+        if (!drag || drag.roomId !== roomId || drag.stepIndex !== stepIndex) return;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        const s = snapToRoomWall(drag.cursor, room);
+        if (s) onDrop(s.point, s.wallA, s.wallB, s.inward);
+        setDrag(null);
+      }}
+      onPointerCancel={() => setDrag(null)}
+    />
+  );
+}
+
 function FurnitureHandles({
   rooms,
   furnishedRooms,
@@ -1968,34 +2025,7 @@ function FurnitureHandles({
               {/* selection highlight on bboxSmall */}
               {isSelected && <path d={smallPath} className="furniture-selected-bbox" />}
 
-              {/* single wall-midpoint drag handle */}
-              {handlePt && (
-                <circle
-                  cx={handlePt.x} cy={handlePt.y} r="0.13"
-                  className="furniture-drag-handle"
-                  onClick={(e) => e.stopPropagation()}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    const w = toWorld(e.clientX, e.clientY);
-                    if (!w) return;
-                    e.currentTarget.setPointerCapture(e.pointerId);
-                    setDrag({ roomId: rr.roomId, stepIndex: si, cursor: w });
-                  }}
-                  onPointerMove={(e) => {
-                    if (!drag) return;
-                    const w = toWorld(e.clientX, e.clientY);
-                    if (w) setDrag((d) => d ? { ...d, cursor: w } : null);
-                  }}
-                  onPointerUp={(e) => {
-                    if (!drag || drag.roomId !== rr.roomId || drag.stepIndex !== si) return;
-                    e.currentTarget.releasePointerCapture(e.pointerId);
-                    const s = snapToRoomWall(drag.cursor, room);
-                    if (s) onDrop(drag.roomId, drag.stepIndex, s.point, s.wallA, s.wallB, s.inward);
-                    setDrag(null);
-                  }}
-                  onPointerCancel={() => setDrag(null)}
-                />
-              )}
+              {/* The drag handle itself is drawn later, in the handle layer. */}
 
               {/* drag ghost + snap indicator */}
               {isDragging && drag && handlePt && (() => {
@@ -2079,39 +2109,7 @@ function FurnitureHandles({
               />
             )}
 
-            {/* Wall-midpoint drag handle (only when selected) */}
-            {handlePt && (
-              <circle
-                cx={handlePt.x} cy={handlePt.y} r="0.13"
-                className="furniture-drag-handle"
-                onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  const w = toWorld(e.clientX, e.clientY);
-                  if (!w) return;
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  setCandDrag({ roomId: c.roomId, stepIndex: c.stepIndex, cursor: w });
-                }}
-                onPointerMove={(e) => {
-                  if (!candDrag) return;
-                  const w = toWorld(e.clientX, e.clientY);
-                  if (w) setCandDrag((d) => (d ? { ...d, cursor: w } : null));
-                }}
-                onPointerUp={(e) => {
-                  if (!candDrag || candDrag.roomId !== c.roomId || candDrag.stepIndex !== c.stepIndex) return;
-                  e.currentTarget.releasePointerCapture(e.pointerId);
-                  const s = snapToRoomWall(candDrag.cursor, room);
-                  if (s) {
-                    onCandidateDrop(
-                      { roomId: c.roomId, stepIndex: c.stepIndex },
-                      s.point, s.wallA, s.wallB, s.inward,
-                    );
-                  }
-                  setCandDrag(null);
-                }}
-                onPointerCancel={() => setCandDrag(null)}
-              />
-            )}
+            {/* The drag handle itself is drawn later, in the handle layer. */}
 
             {/* Drag ghost + snap indicator */}
             {isDragging && candDrag && handlePt && (() => {
@@ -2139,6 +2137,58 @@ function FurnitureHandles({
           </g>,
         ];
       })}
+
+      {/* ── Handle layer ──────────────────────────────────────────────────────
+          Every grab handle, above every footprint click target. See
+          WallDragHandle for why they cannot live inside their own group. */}
+      <g className="furniture-handle-layer">
+        {(() => {
+          if (!isFurnishMode || !selectedKey || selectedKey.roomId !== selectedRoomId) return null;
+          const rr = furnishedRooms.find((r) => r.roomId === selectedKey.roomId);
+          const room = rooms.find((r) => r.id === selectedKey.roomId);
+          const placed = rr?.steps[selectedKey.stepIndex]?.selected?.placed;
+          if (!rr || !room || !placed) return null;
+          const at = getWallMidpointPt(placed);
+          if (!at) return null;
+          return (
+            <WallDragHandle
+              at={at}
+              room={room}
+              drag={drag}
+              setDrag={setDrag}
+              roomId={selectedKey.roomId}
+              stepIndex={selectedKey.stepIndex}
+              toWorld={toWorld}
+              onDrop={(snap, wallA, wallB, inward) =>
+                onDrop(selectedKey.roomId, selectedKey.stepIndex, snap, wallA, wallB, inward)}
+            />
+          );
+        })()}
+
+        {(() => {
+          if (!isFurnishMode || !showFailedCandidates || !selectedCandidateKey) return null;
+          const c = failedCandidates.find(
+            (x) => x.roomId === selectedCandidateKey.roomId && x.stepIndex === selectedCandidateKey.stepIndex,
+          );
+          const room = rooms.find((r) => r.id === selectedCandidateKey.roomId);
+          if (!c || !room) return null;
+          const at = getWallMidpointPt(c.placed);
+          if (!at) return null;
+          return (
+            <WallDragHandle
+              at={at}
+              room={room}
+              drag={candDrag}
+              setDrag={setCandDrag}
+              roomId={c.roomId}
+              stepIndex={c.stepIndex}
+              toWorld={toWorld}
+              onDrop={(snap, wallA, wallB, inward) =>
+                onCandidateDrop({ roomId: c.roomId, stepIndex: c.stepIndex }, snap, wallA, wallB, inward)}
+            />
+          );
+        })()}
+      </g>
     </>
   );
 }
