@@ -17,6 +17,19 @@ import type { PlacedFurniture, PlacementOption, PlacementOptions } from "./types
 
 export type { PlacedFurniture, PlacementOption, PlacementOptions };
 
+// ─── Debug tracing ───────────────────────────────────────────────────────────
+// The ray / wall / kitchen loops trace every probe: tens of thousands of lines
+// for a single apartment, which dominates placement time and floods the console.
+// Off by default — switch it on from the browser console with
+//   __FURNISHER_DEBUG__ = true
+// (and off again with `= false`) to get the full trace back for a debug run.
+// Always guard the call: `if (traceOn()) console.log(…)`, so the template
+// literal is never built when tracing is off.
+
+export function traceOn(): boolean {
+  return (globalThis as { __FURNISHER_DEBUG__?: boolean }).__FURNISHER_DEBUG__ === true;
+}
+
 // ─── Geometry helpers ────────────────────────────────────────────────────────
 
 function sub(a: Point2D, b: Point2D): Point2D {
@@ -432,7 +445,7 @@ function findUsableSegment(
     const smallOk = !inDoorOpening &&
       !rayExitsRoom(rs, wall.inwardNormal, Math.max(0, depthSmall - EPSILON), smallPolygon, doorObstacles);
     if (!bigOk || !smallOk) {
-      console.log(
+      if (traceOn()) console.log(
         `    [ray i=${i} t=${t.toFixed(2)}]` +
         `  pt=(${pt[0].toFixed(2)},${pt[1].toFixed(2)})` +
         `  bigOk=${bigOk}  smallOk=${smallOk}` +
@@ -813,7 +826,7 @@ function placeKitchenVariant(
       yAxis:  arm1Dir_src,
     };
 
-    console.log(`[kitchen] V${vi + 1}  arm1Len=${arm1Len.toFixed(2)}  arm2Len=${arm2Len.toFixed(2)}`);
+    if (traceOn()) console.log(`[kitchen] V${vi + 1}  arm1Len=${arm1Len.toFixed(2)}  arm2Len=${arm2Len.toFixed(2)}`);
 
     for (let i = 0; i < n; i++) {
       const cornerPt = polygon[i];
@@ -849,22 +862,22 @@ function placeKitchenVariant(
       if (arm1WallLen < arm1Len || arm2WallLen < arm2Len) continue;
 
       if (reducedLen(cornerPt, arm1Dir, arm1WallLen) < arm1Len) {
-        console.log(`  [kitchen] corner ${i} skip: arm1 crosses door gap`);
+        if (traceOn()) console.log(`  [kitchen] corner ${i} skip: arm1 crosses door gap`);
         continue;
       }
       if (reducedLen(cornerPt, arm2Dir, arm2WallLen) < arm2Len) {
-        console.log(`  [kitchen] corner ${i} skip: arm2 crosses door gap`);
+        if (traceOn()) console.log(`  [kitchen] corner ${i} skip: arm2 crosses door gap`);
         continue;
       }
 
       const arm1Normal = inwardOf(cornerPt, arm1Dir, arm1Len);
       const arm2Normal = inwardOf(cornerPt, arm2Dir, arm2Len);
       if (!armClear(cornerPt, arm1Dir, arm1Len, arm1Normal)) {
-        console.log(`  [kitchen] corner ${i} skip: arm1 depth ray blocked`);
+        if (traceOn()) console.log(`  [kitchen] corner ${i} skip: arm1 depth ray blocked`);
         continue;
       }
       if (!armClear(cornerPt, arm2Dir, arm2Len, arm2Normal)) {
-        console.log(`  [kitchen] corner ${i} skip: arm2 depth ray blocked`);
+        if (traceOn()) console.log(`  [kitchen] corner ${i} skip: arm2 depth ray blocked`);
         continue;
       }
 
@@ -880,7 +893,7 @@ function placeKitchenVariant(
 
       const arm1EndPt = add(cornerPt, scalePt(arm1Dir, arm1Len));
       const arm2EndPt = add(cornerPt, scalePt(arm2Dir, arm2Len));
-      console.log(
+      if (traceOn()) console.log(
         `  [kitchen] corner ${i} PLACED` +
         `  arm1=(${arm1Dir[0].toFixed(1)},${arm1Dir[1].toFixed(1)})` +
         `  arm2=(${arm2Dir[0].toFixed(1)},${arm2Dir[1].toFixed(1)})`,
@@ -962,14 +975,15 @@ function placeLineVariant(
     const scMin = isFlipped ? linePlacementLength - uMax : uMin;
     const scMax = isFlipped ? linePlacementLength - uMin : uMax;
 
-    console.log(
+    if (traceOn()) console.log(
       `[placer] V${vi + 1}  lpLen=${linePlacementLength.toFixed(2)}` +
       `  depthBig=${depthBig.toFixed(2)}  depthSmall=${depthSmall.toFixed(2)}` +
       `  flipped=${isFlipped}  wallCandidates=${walls.length}`,
     );
 
     for (const wall of walls) {
-      const wallLabel =
+      // Lazy: only formatted when tracing is on (see traceOn).
+      const wallLabel = () =>
         `(${wall.start[0].toFixed(2)},${wall.start[1].toFixed(2)})→` +
         `(${wall.end[0].toFixed(2)},${wall.end[1].toFixed(2)}) len=${wall.length.toFixed(2)}`;
 
@@ -987,7 +1001,7 @@ function placeLineVariant(
             && tProj < wall.length + wHalf;
         });
         if (hasWindow) {
-          console.log(`  [wall] ${wallLabel}  → window present, skip for ${entry.furnitureName}`);
+          if (traceOn()) console.log(`  [wall] ${wallLabel()}  → window present, skip for ${entry.furnitureName}`);
           continue;
         }
       }
@@ -1007,17 +1021,17 @@ function placeLineVariant(
         collisionPoly, edgePoly, doorObstacles, doorOpeningZones,
       );
       if (!usable) {
-        console.log(`  [wall] ${wallLabel}  → no usable segment`);
+        if (traceOn()) console.log(`  [wall] ${wallLabel()}  → no usable segment`);
         continue;
       }
 
       const [usableStart, usableEnd] = usable;
       const usableLen = segmentLength(usableStart, usableEnd);
       if (usableLen < linePlacementLength) {
-        console.log(`  [wall] ${wallLabel}  → usableLen=${usableLen.toFixed(2)} < lpLen=${linePlacementLength.toFixed(2)}  SKIP`);
+        if (traceOn()) console.log(`  [wall] ${wallLabel()}  → usableLen=${usableLen.toFixed(2)} < lpLen=${linePlacementLength.toFixed(2)}  SKIP`);
         continue;
       }
-      console.log(`  [wall] ${wallLabel}  → usableLen=${usableLen.toFixed(2)}  OK`);
+      if (traceOn()) console.log(`  [wall] ${wallLabel()}  → usableLen=${usableLen.toFixed(2)}  OK`);
 
       const wallDir = normalize(sub(wall.end, wall.start));
 

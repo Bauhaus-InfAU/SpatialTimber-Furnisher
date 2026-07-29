@@ -6,7 +6,7 @@ import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import { AppHeader } from "./AppHeader";
-import { ROOM_TOOLS, isRoomTool } from "./types";
+import { ROOM_TOOLS, isRoomTool, isCirculationRoom } from "./types";
 import type {
   ToolId,
   RoomToolId,
@@ -190,10 +190,13 @@ const DEFAULT_GRID_STEP = 0.625;
 const MIN_GRID_STEP = 0.05;
 const MAX_GRID_STEP = 10;
 
-/** Snap a world point to the nearest grid vertex (grid is anchored at origin). */
+/** Snap a world point to the nearest grid vertex (grid is anchored at origin).
+ *  Results are rounded to sub-mm so float dust (4.375000000000001) never reaches
+ *  the dimension labels or the exported JSON. */
 function snapPointToGrid(point: Point2D, step: number): Point2D {
   if (!(step > 0)) return point;
-  return { x: Math.round(point.x / step) * step, y: Math.round(point.y / step) * step };
+  const snap = (v: number) => Math.round((Math.round(v / step) * step) * 1e4) / 1e4;
+  return { x: snap(point.x), y: snap(point.y) };
 }
 
 function constrainToOrthogonal(point: Point2D, anchor: Point2D): Point2D {
@@ -215,7 +218,11 @@ function roomDoorWidth(roomType: RoomToolId) {
   return roomType === "Bathroom" || roomType === "WC" ? 0.75 : 0.9;
 }
 
-function getDoorSwingGeometry(room: DrawnRoom, doorPoint: Point2D) {
+/** Hinge side along the host wall: -1 hinges at the jamb nearer wallA, +1 at the
+ *  jamb nearer wallB. `null` = pick automatically (nearest wall end). */
+type HingeSide = -1 | 1 | null;
+
+function getDoorSwingGeometry(room: DrawnRoom, doorPoint: Point2D, hingeSide: HingeSide = null) {
   if (room.points.length < 2) return null;
 
   let wallA = room.points[0];
@@ -247,12 +254,13 @@ function getDoorSwingGeometry(room: DrawnRoom, doorPoint: Point2D) {
   const inward = pointInPolygon(probe, room.points) ? normal : scalePoint(normal, -1);
   const width = roomDoorWidth(room.type);
 
-  return doorSwingFromWall(snap, width, wallDir, inward, wallA, wallB);
+  return doorSwingFromWall(snap, width, wallDir, inward, wallA, wallB, hingeSide);
 }
 
 /** Build a door swing hinged at the jamb nearer the closest end of its host
  *  wall, so the open leaf tucks toward the adjacent wall/corner (architectural
- *  convention). The leaf opens along `inward`. */
+ *  convention). The leaf opens along `inward`. `hingeSide` overrides that choice
+ *  — used to mirror the two leaves of a double door (see doubleDoorHinges). */
 function doorSwingFromWall(
   doorPoint: Point2D,
   width: number,
@@ -260,9 +268,10 @@ function doorSwingFromWall(
   inward: Point2D,
   wallA: Point2D,
   wallB: Point2D,
+  hingeSide: HingeSide = null,
 ) {
   // Hinge on the side of whichever host-wall end the door sits closer to.
-  const sign = distance(doorPoint, wallA) <= distance(doorPoint, wallB) ? -1 : 1;
+  const sign = hingeSide ?? (distance(doorPoint, wallA) <= distance(doorPoint, wallB) ? -1 : 1);
   const hinge = addPoint(doorPoint, scalePoint(wallDir, (sign * width) / 2));
   // Direction from the hinge toward the far jamb (where the arc lands).
   const awDir = scalePoint(wallDir, -sign);
@@ -270,6 +279,73 @@ function doorSwingFromWall(
   const panelEnd = addPoint(hinge, scalePoint(inward, width));
   const cross = inward.x * awDir.y - inward.y * awDir.x;
   return { arcEnd, hinge, panelEnd, radius: width, sweepFlag: cross > 0 ? 1 : 0, doorPoint };
+}
+
+// ─── Double doors ─────────────────────────────────────────────────────────────
+// Two door points sitting side by side on the same wall are one double door, not
+// two independent single doors. Drawn independently they both hinge toward the
+// same wall end and their leaves overlap; a double door hinges at the two OUTER
+// jambs so the leaves open away from each other, mirrored about the pair's
+// centre.
+
+/** How far apart two door centres may sit and still read as one double door,
+ *  as a multiple of their mean leaf width. Just over 1 allows for the small
+ *  jamb gap between leaves while rejecting two genuinely separate doorways. */
+const DOUBLE_DOOR_SPAN_FACTOR = 1.35;
+
+/** Which polygon edge a door sits on, and how far along it (metres from wallA).
+ *  Doors only pair up when they share a host edge. */
+function doorWallRef(room: DrawnRoom, doorPoint: Point2D) {
+  let wallIndex = 0;
+  let best = Infinity;
+  let t = 0;
+  for (let i = 0; i < room.points.length; i++) {
+    const a = room.points[i];
+    const b = room.points[(i + 1) % room.points.length];
+    const candidate = nearestPointOnSegment(doorPoint, a, b);
+    if (candidate.distance < best) {
+      best = candidate.distance;
+      wallIndex = i;
+      t = distance(a, candidate.point);
+    }
+  }
+  return { wallIndex, t };
+}
+
+/** Per door index, the hinge side to force so that close pairs render as double
+ *  doors: the lower door on the wall hinges at its wallA-side jamb, its partner
+ *  at the wallB-side jamb. `null` for doors that are not part of a pair — those
+ *  keep the normal nearest-corner rule. */
+function doubleDoorHinges(room: DrawnRoom): HingeSide[] {
+  const sides: HingeSide[] = room.doors.map(() => null);
+  if (room.doors.length < 2) return sides;
+
+  const width = roomDoorWidth(room.type);
+  const maxSpan = width * DOUBLE_DOOR_SPAN_FACTOR;
+
+  // Group door indices by host wall, ordered along that wall.
+  const byWall = new Map<number, Array<{ index: number; t: number }>>();
+  room.doors.forEach((door, index) => {
+    const { wallIndex, t } = doorWallRef(room, door);
+    const list = byWall.get(wallIndex);
+    if (list) list.push({ index, t });
+    else byWall.set(wallIndex, [{ index, t }]);
+  });
+
+  for (const list of byWall.values()) {
+    list.sort((a, b) => a.t - b.t);
+    // Greedy: pair each door with the next one along the wall when they are
+    // close enough, then skip both so a third door starts a fresh pair.
+    for (let i = 0; i + 1 < list.length; i++) {
+      const lower = list[i];
+      const upper = list[i + 1];
+      if (upper.t - lower.t > maxSpan) continue;
+      sides[lower.index] = -1;
+      sides[upper.index] = 1;
+      i++;
+    }
+  }
+  return sides;
 }
 
 function lineLabelPosition(a: Point2D, b: Point2D, offset: number) {
@@ -283,7 +359,7 @@ function lineLabelPosition(a: Point2D, b: Point2D, offset: number) {
 }
 
 function formatMetres(value: number) {
-  return `${value.toFixed(2)} m`;
+  return `${value.toFixed(3)} m`;
 }
 
 // ─── Furniture drag helpers ───────────────────────────────────────────────────
@@ -648,7 +724,8 @@ function EntranceLayer({ entrances }: { entrances: EntranceDoor[] }) {
 // door point for it (esp. dataset apartments). To avoid drawing the swing twice
 // in the normal view, exactly one room "owns" the drawing, chosen by room type.
 // Higher priority (lower index) wins; ties broken deterministically by room id.
-const ROOM_DOOR_PRIORITY: RoomToolId[] = ["Bedroom", "Living room", "Kitchen", "Bathroom", "WC", "Children"];
+// Circulation last: a hall/corridor door is drawn by the room it opens into.
+const ROOM_DOOR_PRIORITY: RoomToolId[] = ["Bedroom", "Living room", "Kitchen", "Bathroom", "WC", "Children", "Hall", "Corridor"];
 
 function roomDoorPriority(type: RoomToolId): number {
   const i = ROOM_DOOR_PRIORITY.indexOf(type);
@@ -682,9 +759,13 @@ function computeDoorOwnership(rooms: DrawnRoom[]): Map<string, boolean[]> {
   return ownership;
 }
 
+/** Rooms handed to the placement engine. Circulation spaces are dropped — they
+ *  have no RoomName / furniture recipes — but the full room list is still used
+ *  for door and window adjacency, so a door onto the hall keeps constraining the
+ *  room it opens into. */
 function toEngineRooms(rooms: DrawnRoom[]) {
   let childIndex = 0;
-  return rooms.map((room) => {
+  return rooms.filter((r) => !isCirculationRoom(r.type)).map((room) => {
     let name: RoomName;
     if (room.type === "Children") {
       childIndex++;
@@ -729,6 +810,173 @@ function toEngineRooms(rooms: DrawnRoom[]) {
       } satisfies EngineRoom,
     };
   });
+}
+
+// ─── Template JSON export ─────────────────────────────────────────────────────
+// Writes a traced apartment in the floorplan-generator template format:
+// metres, { x, y } points, rectilinear open rings wound CCW, room ids as
+// readable type slugs. Doors that connect two rooms go to `doors` (from/to);
+// doors with no second room (apartment entrances) go to `entrances`, since the
+// template format's from/to must both be room ids.
+
+const TEMPLATE_ROOM_TYPE: Record<RoomToolId, string> = {
+  "Bedroom": "bedroom",
+  "Living room": "living",
+  "Kitchen": "kitchen",
+  "Bathroom": "bathroom",
+  "WC": "wc",
+  "Children": "bedroom",
+  "Hall": "hall",
+  "Corridor": "corridor",
+};
+
+type TemplatePoint = { x: number; y: number };
+
+type TemplateApartment = {
+  id: string;
+  name: string;
+  rooms: Array<{ id: string; type: string; polygon: TemplatePoint[] }>;
+  doors?: Array<{ from: string; to: string; position: TemplatePoint; width: number }>;
+  windows?: Array<{ room: string; position: TemplatePoint; width: number }>;
+  entrances?: Array<{ room: string; position: TemplatePoint; width: number }>;
+};
+
+/** Sub-mm rounding — keeps grid-snapped coordinates exact and readable. */
+function round4(value: number) {
+  return Math.round(value * 1e4) / 1e4;
+}
+
+function templatePoint(p: Point2D): TemplatePoint {
+  return { x: round4(p.x), y: round4(p.y) };
+}
+
+/** Open ring (no repeated first vertex), wound CCW like normalizePolygonForEngine. */
+function templatePolygon(points: Point2D[]): TemplatePoint[] {
+  const ring = [...points];
+  while (
+    ring.length > 1 &&
+    Math.abs(ring[0].x - ring[ring.length - 1].x) < 1e-6 &&
+    Math.abs(ring[0].y - ring[ring.length - 1].y) < 1e-6
+  ) {
+    ring.pop();
+  }
+  const oriented = polygonSignedArea(ring) < 0 ? ring.reverse() : ring;
+  return oriented.map(templatePoint);
+}
+
+/** Readable, stable ids: one room of a type keeps the bare slug, several get
+ *  suffixes in trace order (bedroom-1, bedroom-2, …). */
+function buildTemplateRoomIds(rooms: DrawnRoom[]): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const room of rooms) {
+    const slug = TEMPLATE_ROOM_TYPE[room.type];
+    counts.set(slug, (counts.get(slug) ?? 0) + 1);
+  }
+  const used = new Map<string, number>();
+  const ids = new Map<string, string>();
+  for (const room of rooms) {
+    const slug = TEMPLATE_ROOM_TYPE[room.type];
+    if ((counts.get(slug) ?? 0) === 1) {
+      ids.set(room.id, slug);
+    } else {
+      const n = (used.get(slug) ?? 0) + 1;
+      used.set(slug, n);
+      ids.set(room.id, `${slug}-${n}`);
+    }
+  }
+  return ids;
+}
+
+function buildTemplateApartment(rooms: DrawnRoom[], id: string, name: string): TemplateApartment {
+  const ids = buildTemplateRoomIds(rooms);
+
+  const doors: NonNullable<TemplateApartment["doors"]> = [];
+  const entrances: NonNullable<TemplateApartment["entrances"]> = [];
+  const seenDoors = new Set<string>();
+
+  for (const room of rooms) {
+    const roomId = ids.get(room.id)!;
+    for (const door of room.doors) {
+      // The same physical door is usually stored on both rooms it connects.
+      // Nearest qualifying room wins, so a door near a corner where three rooms
+      // meet still pairs with the one it actually sits on.
+      let partner: DrawnRoom | null = null;
+      let partnerDist = Infinity;
+      for (const other of rooms) {
+        if (other.id === room.id) continue;
+        const d = distPointToPolygonBoundary(door, other.points);
+        if (d <= ADJACENT_DOOR_THRESHOLD && d < partnerDist) {
+          partner = other;
+          partnerDist = d;
+        }
+      }
+      const pos = templatePoint(door);
+      if (!partner) {
+        const key = `entrance:${roomId}:${pos.x},${pos.y}`;
+        if (seenDoors.has(key)) continue;
+        seenDoors.add(key);
+        entrances.push({ room: roomId, position: pos, width: roomDoorWidth(room.type) });
+        continue;
+      }
+      const partnerId = ids.get(partner.id)!;
+      const pair = [roomId, partnerId].sort().join("↔");
+      const key = `door:${pair}:${pos.x},${pos.y}`;
+      if (seenDoors.has(key)) continue;
+      seenDoors.add(key);
+      // Narrower of the two rooms' door widths — a bathroom door stays 0.75.
+      const width = Math.min(roomDoorWidth(room.type), roomDoorWidth(partner.type));
+      doors.push({ from: roomId, to: partnerId, position: pos, width });
+    }
+  }
+
+  const windows: NonNullable<TemplateApartment["windows"]> = [];
+  for (const room of rooms) {
+    const roomId = ids.get(room.id)!;
+    room.windows.forEach((win, i) => {
+      windows.push({
+        room: roomId,
+        position: templatePoint(win),
+        width: room.windowWidths?.[i] ?? windowWidth(room.type),
+      });
+    });
+  }
+
+  return {
+    id,
+    name,
+    rooms: rooms.map((room) => ({
+      id: ids.get(room.id)!,
+      type: TEMPLATE_ROOM_TYPE[room.type],
+      polygon: templatePolygon(room.points),
+    })),
+    ...(doors.length > 0 ? { doors } : {}),
+    ...(windows.length > 0 ? { windows } : {}),
+    ...(entrances.length > 0 ? { entrances } : {}),
+  };
+}
+
+/** "3r-20260727-1432" — habitable-room count in the library's Nr convention
+ *  plus a timestamp, so repeated exports never collide. */
+function buildTemplateId(rooms: DrawnRoom[], now: Date) {
+  const habitable = rooms.filter(
+    (r) => r.type === "Bedroom" || r.type === "Living room" || r.type === "Children",
+  ).length;
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}`;
+  return `${Math.max(1, habitable)}r-${stamp}`;
+}
+
+function downloadTemplateJson(rooms: DrawnRoom[]) {
+  const now = new Date();
+  const id = buildTemplateId(rooms, now);
+  const template = buildTemplateApartment(rooms, id, `Traced apartment ${id}`);
+  const blob = new Blob([`${JSON.stringify(template, null, 2)}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${id}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function roomFingerprint(room: DrawnRoom) {
@@ -997,7 +1245,7 @@ function EdgeLabels({
             fill={isDraft ? color : undefined}
             transform={`rotate(${angle}, ${lx}, ${ly})`}
           >
-            {len.toFixed(2)}m
+            {len.toFixed(3)}m
           </text>
         );
       })}
@@ -1385,6 +1633,7 @@ function DoorSwing({
   entrancePoints: Point2D[];
 }) {
   if (!room.doors.length) return null;
+  const hingeSides = doubleDoorHinges(room);
   return (
     <>
       {room.doors.map((doorPoint, i) => {
@@ -1399,7 +1648,7 @@ function DoorSwing({
         const drawGlyph = ownedDoors[i] && !isEntrance;
         const drawZone = showAll;
         if (!drawGlyph && !drawZone) return null;
-        const geometry = getDoorSwingGeometry(room, doorPoint);
+        const geometry = getDoorSwingGeometry(room, doorPoint, hingeSides[i]);
         if (!geometry) return null;
         const { arcEnd, hinge, radius, sweepFlag, panelEnd } = geometry;
         // Door clearance/transition area = a door-width square reaching from the
@@ -2634,6 +2883,11 @@ export default function App() {
     setOrthoMode((v) => !v);
   }
 
+  function handleDownloadTemplate() {
+    if (rooms.length === 0) return;
+    downloadTemplateJson(dedupeRooms(rooms));
+  }
+
   function handleToggleSnapToGrid() {
     setSnapToGrid((v) => !v);
   }
@@ -2784,6 +3038,11 @@ export default function App() {
     if (!rooms.length) {
       setFurnishedRooms([]);
       setFurnishError("Draw at least one room before furnishing.");
+      return;
+    }
+    if (rooms.every((r) => isCirculationRoom(r.type))) {
+      setFurnishedRooms([]);
+      setFurnishError("Halls and corridors are not furnished — draw at least one other room.");
       return;
     }
 
@@ -3274,8 +3533,11 @@ export default function App() {
             Explore dataset
           </button>
         </div>
-        {viewMode === "trace" ? (
-          <Sidebar
+        {/* Both panels stay mounted and are hidden with the `hidden` attribute
+            rather than unmounted, so switching tabs keeps the Explore tab's
+            loaded bundle, filters, selected apartment and scroll position. */}
+        <Sidebar
+            hidden={viewMode !== "trace"}
             rooms={rooms}
             furnishedRooms={furnishedRooms}
             selectedTool={selectedTool}
@@ -3295,6 +3557,7 @@ export default function App() {
             onToggleOrtho={handleToggleOrtho}
             onToggleSnapToGrid={handleToggleSnapToGrid}
             onSetGridStep={handleSetGridStep}
+            onDownloadTemplate={handleDownloadTemplate}
             onSetAptType={handleSetAptType}
             onUpdateRoomSteps={handleUpdateRoomSteps}
             onImageSelect={selectBackgroundImage}
@@ -3302,13 +3565,12 @@ export default function App() {
             onImageUpdate={updateBackgroundImage}
             {...affords}
           />
-        ) : (
-          <ExploreTab
-            isFurnished={isFurnished}
-            affords={affords}
-            onLoadApartment={handleLoadDatasetApartment}
-          />
-        )}
+        <ExploreTab
+          hidden={viewMode !== "explore"}
+          isFurnished={isFurnished}
+          affords={affords}
+          onLoadApartment={handleLoadDatasetApartment}
+        />
       </div>
 
       <section

@@ -850,6 +850,18 @@ button {
   border-radius: 4px;
 }
 
+.download-template-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.download-template-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ─── Secondary actions (door / upload) ────────────────────────────────────── */
 
 .step-secondary-actions {
@@ -999,6 +1011,12 @@ button {
   border-radius: var(--st-r-card);
   box-shadow: var(--st-shadow-card);
   background: radial-gradient(120% 90% at 50% 8%, #f6f1e7 0%, #ece4d6 46%, #e0d6c5 100%);
+}
+
+/* The inactive rail panel stays mounted (keeps its state) but takes no space.
+   Needed because .sidebar sets display:flex, which beats the UA [hidden] rule. */
+.sidebar[hidden] {
+  display: none;
 }
 
 .viewer-grid {
@@ -2535,6 +2553,177 @@ button {
 
 .nf-source {
   color: var(--text-muted);
+}
+
+/* ─── Findings (interactive dashboard highlights) ───────────────────────────── */
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.findings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.findings-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.findings-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.findings-readout {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.findings-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.findings-chart {
+  width: 100%;
+  height: auto;
+  touch-action: none;
+}
+
+/* Ink for the data marks — the quiet --st-oat fill used for surfaces is too low
+   contrast to read as a bar at this size. Clay marks the selected range only. */
+.findings-bar-fill {
+  fill: rgba(20, 20, 19, 0.34);
+  transition: fill 120ms;
+}
+
+.findings-bar-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.findings-bar:hover .findings-bar-fill {
+  fill: rgba(20, 20, 19, 0.52);
+}
+
+.findings-bar.selected .findings-bar-fill {
+  fill: var(--accent);
+}
+
+.findings-axis {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.findings-tick {
+  fill: var(--text-muted);
+  font-family: var(--st-mono);
+  font-size: 10px;
+}
+
+.findings-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.findings-range {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.findings-chip {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--st-r-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: var(--st-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.findings-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.findings-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.findings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--st-r-sm);
+  background: transparent;
+  text-align: left;
+  transition: background 120ms, border-color 120ms;
+}
+
+.findings-row:hover {
+  background: var(--bg-card);
+  border-color: var(--border-strong);
+}
+
+.findings-row.active {
+  border-color: var(--accent);
+}
+
+.findings-row-label {
+  flex: 0 0 96px;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.findings-row-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(20, 20, 19, 0.10);
+  overflow: hidden;
+}
+
+.findings-row-bar {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.findings-row-count {
+  flex: 0 0 auto;
+  min-width: 42px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .nf-filter-row {

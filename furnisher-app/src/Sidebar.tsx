@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
 import type { CSSProperties } from "react";
-import { ROOM_TOOLS } from "./types";
+import { ROOM_TOOLS, isCirculationRoom } from "./types";
 import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef } from "./types";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
 
 type SidebarProps = {
+  /** Kept mounted but out of view when the other tab is active — see App. */
+  hidden?: boolean;
   rooms: DrawnRoom[];
   furnishedRooms: FurnishedRoomResult[];
   selectedTool: ToolId;
@@ -32,6 +34,7 @@ type SidebarProps = {
   onToggleOrtho: () => void;
   onToggleSnapToGrid: () => void;
   onSetGridStep: (step: number) => void;
+  onDownloadTemplate: () => void;
   onSetAptType: (type: number | null) => void;
   onUpdateRoomSteps: (section: string, steps: PipelineStepConfig[]) => void;
   onImageSelect: (id: string) => void;
@@ -78,6 +81,14 @@ function IconLines() {
   return (
     <svg width="9" height="9" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <polygon points="1,9 3,1 9,2 12,7 7,12" />
+    </svg>
+  );
+}
+
+function IconDownload() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M6.5 1.5v6.5M4 6l2.5 2.5L9 6M2 10.5h9" />
     </svg>
   );
 }
@@ -613,6 +624,7 @@ function GridSnapControl({
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 export function Sidebar({
+  hidden = false,
   rooms, furnishedRooms, selectedTool, backgroundImages,
   drawMode, orthoMode, snapToGrid, gridStep, aptType, pipelineConfig,
   onSelectTool, onUploadClick, onReset, onFurnish,
@@ -620,7 +632,7 @@ export function Sidebar({
   showFailedCandidates, onToggleFailedCandidates,
   showWalls, onToggleWalls,
   onSetDrawMode, onToggleOrtho, onToggleSnapToGrid, onSetGridStep,
-  onSetAptType, onUpdateRoomSteps,
+  onDownloadTemplate, onSetAptType, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
 }: SidebarProps) {
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
@@ -645,21 +657,25 @@ export function Sidebar({
     : `Type ${aptTypeLabel(aptType)} (auto)`;
 
   // Readiness note shown under the primary action
+  // Halls and corridors are traced but never furnished, so they don't count here.
+  const furnishableCount = rooms.filter((r) => !isCirculationRoom(r.type)).length;
   const furnishNote = rooms.length === 0
     ? "Upload a floor plan and draw your rooms."
     : isFurnished
     ? "Explore and adjust the placement."
-    : `${rooms.length} room${rooms.length > 1 ? "s" : ""} ready for furnishing.`;
+    : furnishableCount === 0
+    ? "Halls and corridors are not furnished — draw at least one other room."
+    : `${furnishableCount} room${furnishableCount > 1 ? "s" : ""} ready for furnishing.`;
 
   return (
-    <aside className="sidebar" aria-label="Design pipeline">
+    <aside className="sidebar" aria-label="Design pipeline" hidden={hidden}>
       <div className="sidebar-header">
         <div className="rail-eyebrow"><b>·</b> Pipeline</div>
         <div className="sidebar-subtitle">Trace your plan, then check the furniture fits.</div>
       </div>
 
       <div className="furnish-card">
-        <button className="furnish-button" type="button" onClick={onFurnish} disabled={rooms.length === 0}>
+        <button className="furnish-button" type="button" onClick={onFurnish} disabled={furnishableCount === 0}>
           <svg className="furnish-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M5 3v4M3 5h4M6 17v4M4 19h4M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
           </svg>
@@ -758,6 +774,11 @@ export function Sidebar({
           <button className={`step-btn primary wide${selectedTool === "windows" ? " active" : ""}`}
             type="button" onClick={() => onSelectTool("windows")}>
             Place windows{windowCount > 0 ? ` (${windowCount})` : ""}
+          </button>
+          <button className="step-btn wide download-template-btn"
+            type="button" onClick={onDownloadTemplate} disabled={rooms.length === 0}
+            title="Export the traced apartment in the floorplan template format">
+            <IconDownload /> Download apartment as JSON
           </button>
         </PipelineStep>
 

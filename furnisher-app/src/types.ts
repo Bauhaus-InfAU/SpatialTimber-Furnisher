@@ -10,14 +10,24 @@ export type ToolId =
   | "Bathroom"
   | "WC"
   | "Children"
+  | "Hall"
+  | "Corridor"
   | "doors"
   | "windows"
   | "furnish";
 
 export type RoomToolId = Extract<
   ToolId,
-  "Bedroom" | "Living room" | "Kitchen" | "Bathroom" | "WC" | "Children"
+  "Bedroom" | "Living room" | "Kitchen" | "Bathroom" | "WC" | "Children" | "Hall" | "Corridor"
 >;
+
+/** Circulation spaces: traced for the layout/template, never furnished — the
+ *  engine's RoomName vocabulary has no equivalent and no furniture recipes. */
+export const CIRCULATION_ROOM_TYPES = ["Hall", "Corridor"] as const;
+
+export function isCirculationRoom(type: RoomToolId): boolean {
+  return (CIRCULATION_ROOM_TYPES as readonly string[]).includes(type);
+}
 
 export type Point2D = { x: number; y: number };
 
@@ -84,6 +94,8 @@ export const ROOM_TOOLS: Array<{
   { id: "Bathroom", label: "Bath", chipLabel: "bath", color: "#5F9B95" },
   { id: "WC", label: "WC", chipLabel: "wc", color: "#9A7AA0" },
   { id: "Children", label: "Child", chipLabel: "children", color: "#CBA13F" },
+  { id: "Hall", label: "Hall", chipLabel: "hall", color: "#8C8375" },
+  { id: "Corridor", label: "Corr", chipLabel: "corridor", color: "#A79C88" },
 ];
 
 export type CustomFurnitureDef = {
@@ -116,6 +128,8 @@ export function isRoomTool(tool: ToolId): tool is RoomToolId {
     tool === "Kitchen" ||
     tool === "Bathroom" ||
     tool === "WC" ||
-    tool === "Children"
+    tool === "Children" ||
+    tool === "Hall" ||
+    tool === "Corridor"
   );
 }

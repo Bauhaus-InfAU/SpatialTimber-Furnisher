@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { NeufertBrowser, parseNeufertBundle } from "./NeufertBrowser";
+import { Findings } from "./Findings";
 import type { NeufertRecord, Cohort } from "./NeufertBrowser";
 import { AffordToggles } from "./AffordToggles";
 import type { AffordToggleProps } from "./AffordToggles";
@@ -14,10 +15,14 @@ function fmtInt(n: number) {
 }
 
 export function ExploreTab({
+  hidden = false,
   isFurnished,
   affords,
   onLoadApartment,
 }: {
+  /** Kept mounted but out of view when the other tab is active, so the loaded
+   *  bundle and browsing position survive a tab switch — see App. */
+  hidden?: boolean;
   isFurnished: boolean;
   affords: AffordToggleProps;
   onLoadApartment: (record: NeufertRecord, opts?: { cohortActive?: boolean }) => void;
@@ -28,8 +33,16 @@ export function ExploreTab({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cohort, setCohort] = useState<Cohort | null>(null);
+  // Guards the async parse against landing on an unmounted tab. Must be set on
+  // mount, not just at init: StrictMode runs mount → cleanup → mount in dev, so
+  // an init-only `true` is flipped to false by that first cleanup and never
+  // restored — which silently discarded every parsed bundle and left the button
+  // stuck on "Loading…".
   const aliveRef = useRef(true);
-  useEffect(() => () => { aliveRef.current = false; }, []);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
 
   function handlePickClick() {
     fileRef.current?.click();
@@ -74,7 +87,7 @@ export function ExploreTab({
   }
 
   return (
-    <aside className="sidebar explore-tab" aria-label="Explore dataset">
+    <aside className="sidebar explore-tab" aria-label="Explore dataset" hidden={hidden}>
       <div className="sidebar-header">
         <div className="rail-eyebrow"><b>·</b> Explore dataset</div>
         <div className="sidebar-subtitle">Browse the Neufert 4.0 benchmark and jump from a finding into the furnisher.</div>
@@ -104,7 +117,7 @@ export function ExploreTab({
 
             {isFurnished ? <AffordToggles {...affords} /> : null}
 
-            {/* Findings charts slot in here (Phase 4): <Findings records onPickCohort={setCohort} /> */}
+            <Findings records={records} cohort={cohort} onPickCohort={setCohort} />
 
             <NeufertBrowser
               records={records}
