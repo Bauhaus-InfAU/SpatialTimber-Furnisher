@@ -103,6 +103,38 @@ export const ROOM_TOOLS: Array<{
   { id: "Corridor", label: "Corr", chipLabel: "corridor", color: "#A79C88" },
 ];
 
+// ─── Wall settings ────────────────────────────────────────────────────────────
+// Walls are generated from the traced geometry: the apartment contour gives the
+// outer walls, the room polygons give the inner (partition) walls. The offset
+// says which side of the drawn line the thickness is laid on — "inner" keeps the
+// drawn line as the outer face, "outer" keeps it as the inner face (so the traced
+// clear dimensions are preserved), "midline" straddles it.
+
+export type WallOffset = "inner" | "midline" | "outer";
+
+export type WallTypeSettings = {
+  enabled: boolean;
+  /** Metres. */
+  thickness: number;
+  offset: WallOffset;
+};
+
+export type WallSettings = {
+  outer: WallTypeSettings;
+  inner: WallTypeSettings;
+};
+
+export const DEFAULT_WALL_SETTINGS: WallSettings = {
+  outer: { enabled: true, thickness: 0.25, offset: "outer" },
+  inner: { enabled: true, thickness: 0.1, offset: "midline" },
+};
+
+export const WALL_OFFSET_OPTIONS: Array<{ id: WallOffset; label: string; title: string }> = [
+  { id: "inner",   label: "Inner",    title: "Thickness laid inside the drawn line" },
+  { id: "midline", label: "Mid-line", title: "Thickness centred on the drawn line" },
+  { id: "outer",   label: "Outer",    title: "Thickness laid outside the drawn line" },
+];
+
 export type CustomFurnitureDef = {
   name: string;
   bigWidth: number;

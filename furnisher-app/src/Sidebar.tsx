@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type { CSSProperties } from "react";
-import { ROOM_TOOLS, isCirculationRoom } from "./types";
-import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef } from "./types";
+import { ROOM_TOOLS, isCirculationRoom, WALL_OFFSET_OPTIONS } from "./types";
+import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef, WallSettings, WallTypeSettings } from "./types";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
@@ -22,6 +22,9 @@ type SidebarProps = {
   pipelineConfig: PipelineConfig;
   onSelectTool: (tool: ToolId) => void;
   onUploadClick: () => void;
+  onUploadJsonClick: () => void;
+  wallSettings: WallSettings;
+  onSetWallSettings: (patch: Partial<WallSettings>) => void;
   onReset: () => void;
   onFurnish: () => void;
   showTransitionAreas: boolean;
@@ -99,6 +102,7 @@ function ImageListSection({
   backgroundImages,
   selectedTool,
   onUploadClick,
+  onUploadJsonClick,
   onSelectTool,
   onImageSelect,
   onImageDelete,
@@ -107,6 +111,7 @@ function ImageListSection({
   backgroundImages: BackgroundImage[];
   selectedTool: ToolId;
   onUploadClick: () => void;
+  onUploadJsonClick: () => void;
   onSelectTool: (tool: ToolId) => void;
   onImageSelect: (id: string) => void;
   onImageDelete: (id: string) => void;
@@ -114,9 +119,19 @@ function ImageListSection({
 }) {
   return (
     <>
-      <button className="step-btn primary wide" type="button" onClick={onUploadClick}>
-        Upload floor plan image
-      </button>
+      <div className="upload-row">
+        <button className="step-btn primary" type="button" onClick={onUploadClick}>
+          Upload floor plan image
+        </button>
+        <button
+          className="step-btn secondary"
+          type="button"
+          onClick={onUploadJsonClick}
+          title="Upload an apartment JSON — outer contour with its door and windows"
+        >
+          JSON
+        </button>
+      </div>
 
       {backgroundImages.length > 0 && (
         <div className="image-list">
@@ -573,6 +588,106 @@ function RoomSectionPanel({
   );
 }
 
+// ─── Wall settings ────────────────────────────────────────────────────────────
+// Optional generated walls: outer (from the uploaded apartment contour) and
+// inner (from the traced room polygons). Each has its own thickness and the side
+// of the drawn line the thickness sits on. The thickness field keeps a draft
+// string so intermediate states ("0.", "0,1") stay editable.
+
+function WallTypeRow({
+  label,
+  hint,
+  settings,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  settings: WallTypeSettings;
+  onChange: (patch: Partial<WallTypeSettings>) => void;
+}) {
+  const [draft, setDraft] = useState(String(settings.thickness));
+
+  useEffect(() => { setDraft(String(settings.thickness)); }, [settings.thickness]);
+
+  function commit() {
+    const parsed = Number.parseFloat(draft.replace(",", "."));
+    if (Number.isFinite(parsed) && parsed > 0) onChange({ thickness: parsed });
+    else setDraft(String(settings.thickness));
+  }
+
+  return (
+    <div className={`wall-row${settings.enabled ? " active" : ""}`}>
+      <div className="ortho-inline">
+        <span className="ortho-label" title={hint}>{label}</span>
+        <button
+          type="button"
+          className={`ortho-toggle${settings.enabled ? " active" : ""}`}
+          onClick={() => onChange({ enabled: !settings.enabled })}
+          title={hint}
+          aria-pressed={settings.enabled}
+        />
+      </div>
+      {settings.enabled && (
+        <>
+          <label className="grid-step-field">
+            <span className="grid-step-label">Thickness</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="grid-step-input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              title="Wall thickness in metres"
+            />
+            <span className="grid-step-unit">m</span>
+          </label>
+          <div className="wall-offset-group">
+            {WALL_OFFSET_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`wall-offset-btn${settings.offset === opt.id ? " active" : ""}`}
+                title={opt.title}
+                onClick={() => onChange({ offset: opt.id })}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WallSettingsSection({
+  wallSettings,
+  onChange,
+}: {
+  wallSettings: WallSettings;
+  onChange: (patch: Partial<WallSettings>) => void;
+}) {
+  return (
+    <div className="wall-settings">
+      <div className="wall-settings-title">Walls (optional)</div>
+      <WallTypeRow
+        label="Outer walls"
+        hint="Built along the uploaded apartment contour"
+        settings={wallSettings.outer}
+        onChange={(patch) => onChange({ outer: { ...wallSettings.outer, ...patch } })}
+      />
+      <WallTypeRow
+        label="Inner walls"
+        hint="Built along the traced room outlines"
+        settings={wallSettings.inner}
+        onChange={(patch) => onChange({ inner: { ...wallSettings.inner, ...patch } })}
+      />
+    </div>
+  );
+}
+
 // ─── Grid snap control ────────────────────────────────────────────────────────
 // The step field keeps its own draft text so intermediate states ("0.", "0,6")
 // stay editable; it commits on blur / Enter and re-syncs if the prop changes.
@@ -627,7 +742,8 @@ export function Sidebar({
   hidden = false,
   rooms, furnishedRooms, selectedTool, backgroundImages,
   drawMode, orthoMode, snapToGrid, gridStep, aptType, pipelineConfig,
-  onSelectTool, onUploadClick, onReset, onFurnish,
+  onSelectTool, onUploadClick, onUploadJsonClick, onReset, onFurnish,
+  wallSettings, onSetWallSettings,
   showTransitionAreas, onToggleTransitionAreas,
   showFailedCandidates, onToggleFailedCandidates,
   showWalls, onToggleWalls,
@@ -704,16 +820,21 @@ export function Sidebar({
           open={openSteps.has(1)}
           onToggle={() => toggleStep(1)}
         >
-          <p className="step-description">Upload a floor plan image and set the real-world scale.</p>
+          <p className="step-description">
+            Upload a floor plan image and set the real-world scale — or load an apartment
+            JSON (outer contour with its door and windows) and trace the rooms inside it.
+          </p>
           <ImageListSection
             backgroundImages={backgroundImages}
             selectedTool={selectedTool}
             onUploadClick={onUploadClick}
+            onUploadJsonClick={onUploadJsonClick}
             onSelectTool={onSelectTool}
             onImageSelect={onImageSelect}
             onImageDelete={onImageDelete}
             onImageUpdate={onImageUpdate}
           />
+          <WallSettingsSection wallSettings={wallSettings} onChange={onSetWallSettings} />
         </PipelineStep>
 
         {/* ── 02 Trace rooms ── */}

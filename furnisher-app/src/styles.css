@@ -862,6 +862,93 @@ button {
   cursor: not-allowed;
 }
 
+/* Image upload + apartment-JSON upload, side by side. The image button takes the
+   remaining width (it already carries flex: 1), the JSON button stays compact. */
+.upload-row {
+  display: flex;
+  gap: 6px;
+}
+
+.upload-row .step-btn.secondary {
+  flex: none;
+  padding: 0 12px;
+}
+
+/* ─── Wall settings (generated outer / inner walls) ─────────────────────────── */
+
+.wall-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.wall-settings-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.wall-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.wall-row .ortho-inline {
+  margin-left: 0;
+}
+
+.wall-row.active .ortho-label {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.wall-row .grid-step-field {
+  margin-left: auto;
+  opacity: 1;
+}
+
+.wall-row .grid-step-input {
+  width: 52px;
+}
+
+.wall-offset-group {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+  padding: 2px;
+  background: var(--ink-tint);
+  border-radius: var(--st-r-pill);
+}
+
+.wall-offset-btn {
+  flex: 1;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: var(--st-r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 120ms, background 120ms;
+}
+
+.wall-offset-btn:hover {
+  color: var(--text-secondary);
+}
+
+.wall-offset-btn.active {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 /* ─── Secondary actions (door / upload) ────────────────────────────────────── */
 
 .step-secondary-actions {
@@ -2981,4 +3068,13 @@ button {
   fill: var(--st-ink-2);            /* dark warm grey — reads clearly as structure */
   stroke: var(--st-ink-2);
   stroke-width: 0.01px;             /* world units (metres) — hairline seam */
+}
+
+/* ─── Uploaded apartment shell (contour from an apartment JSON) ─────────────── */
+
+.apartment-shell-outline {
+  fill: none;
+  stroke: var(--st-ink-2);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }

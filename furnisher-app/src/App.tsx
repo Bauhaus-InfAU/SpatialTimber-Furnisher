@@ -6,8 +6,9 @@ import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
 import { AppHeader } from "./AppHeader";
-import { ROOM_TOOLS, isRoomTool, isCirculationRoom } from "./types";
+import { ROOM_TOOLS, isRoomTool, isCirculationRoom, DEFAULT_WALL_SETTINGS } from "./types";
 import type {
+  WallSettings,
   ToolId,
   RoomToolId,
   FurnishableRoomId,
@@ -22,6 +23,8 @@ import type {
   CustomFurnitureDef,
 } from "./types";
 import { Sidebar } from "./Sidebar";
+import { parseApartmentJson, buildWallBands } from "./apartmentJson";
+import type { ApartmentOpening } from "./apartmentJson";
 import { ExploreTab } from "./ExploreTab";
 import type { NeufertRecord } from "./NeufertBrowser";
 
@@ -475,6 +478,10 @@ function inferApartmentType(rooms: DrawnRoom[]) {
 
 const ADJACENT_DOOR_THRESHOLD = 0.4; // metres
 
+// A room edge whose ends are both this close to the apartment contour counts as
+// traced ON the contour — the outer wall already covers it.
+const SHELL_EDGE_TOLERANCE = 0.12; // metres
+
 function distPointToPolygonBoundary(pt: Point2D, polygon: Point2D[]): number {
   let min = Infinity;
   for (let i = 0; i < polygon.length; i++) {
@@ -495,7 +502,7 @@ const DOOR_CUTTER_HALF_DEPTH = 0.30; // half-depth across wall (0.6 m total, ove
 
 /** Build one door-opening cutter rectangle (as engine tuples) for a door point,
  *  aligned to the room's nearest polygon edge. Returns null for degenerate edges. */
-function buildDoorCutter(room: DrawnRoom, door: Point2D): [number, number][] | null {
+function buildDoorCutter(room: DrawnRoom, door: Point2D, halfDepth = DOOR_CUTTER_HALF_DEPTH): [number, number][] | null {
   if (room.points.length < 2) return null;
   // Nearest room-polygon edge to the door point.
   let wallA = room.points[0];
@@ -516,7 +523,7 @@ function buildDoorCutter(room: DrawnRoom, door: Point2D): [number, number][] | n
   const n = perpCounterClockwise(wallDir);
   const halfW = (roomDoorWidth(room.type) + DOOR_CUTTER_MARGIN) / 2;
   const along = scalePoint(wallDir, halfW);
-  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  const across = scalePoint(n, halfDepth);
   // Corners: door ± wallDir*(width/2) ± n*halfDepth.
   const corners = [
     addPoint(addPoint(door, along), across),
@@ -531,7 +538,7 @@ function buildDoorCutter(room: DrawnRoom, door: Point2D): [number, number][] | n
  *  point, aligned to the room's nearest polygon edge. Mirrors buildDoorCutter
  *  but uses the given real window width (+ the same small margin) for the
  *  along-wall span. Returns null for degenerate edges. */
-function buildWindowCutter(room: DrawnRoom, windowPt: Point2D, width: number): [number, number][] | null {
+function buildWindowCutter(room: DrawnRoom, windowPt: Point2D, width: number, halfDepth = DOOR_CUTTER_HALF_DEPTH): [number, number][] | null {
   if (room.points.length < 2) return null;
   // Nearest room-polygon edge to the window point.
   let wallA = room.points[0];
@@ -552,7 +559,7 @@ function buildWindowCutter(room: DrawnRoom, windowPt: Point2D, width: number): [
   const n = perpCounterClockwise(wallDir);
   const halfW = (width + DOOR_CUTTER_MARGIN) / 2;
   const along = scalePoint(wallDir, halfW);
-  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  const across = scalePoint(n, halfDepth);
   // Corners: window ± wallDir*(width/2) ± n*halfDepth.
   const corners = [
     addPoint(addPoint(windowPt, along), across),
@@ -573,23 +580,25 @@ function cutOpeningsInWalls(
   wallRings: Point2D[][],
   rooms: DrawnRoom[],
   entrances: EntranceDoor[] = [],
+  /** Half-depth across the wall — raise it for walls thicker than the default. */
+  halfDepth: number = DOOR_CUTTER_HALF_DEPTH,
 ): Point2D[][] {
   const cutters: [number, number][][] = [];
   for (const room of rooms) {
     for (const door of room.doors) {
-      const c = buildDoorCutter(room, door);
+      const c = buildDoorCutter(room, door, halfDepth);
       if (c) cutters.push(c);
     }
     for (let i = 0; i < room.windows.length; i++) {
       const width = room.windowWidths?.[i] ?? windowWidth(room.type);
-      const c = buildWindowCutter(room, room.windows[i], width);
+      const c = buildWindowCutter(room, room.windows[i], width, halfDepth);
       if (c) cutters.push(c);
     }
   }
   // Apartment entrance openings — use the wall orientation baked in at load so
   // the opening lines up with the same wall the swing glyph is drawn on.
   for (const e of entrances) {
-    const c = buildOpeningCutterAligned(e.point, e.width, e.wallDir);
+    const c = buildOpeningCutterAligned(e.point, e.width, e.wallDir, halfDepth);
     if (c) cutters.push(c);
   }
   if (!cutters.length) return wallRings;
@@ -678,12 +687,13 @@ function buildOpeningCutterAligned(
   point: Point2D,
   width: number,
   wallDir: Point2D,
+  halfDepth = DOOR_CUTTER_HALF_DEPTH,
 ): [number, number][] | null {
   if (wallDir.x === 0 && wallDir.y === 0) return null;
   const n = perpCounterClockwise(wallDir);
   const halfW = (width + DOOR_CUTTER_MARGIN) / 2;
   const along = scalePoint(wallDir, halfW);
-  const across = scalePoint(n, DOOR_CUTTER_HALF_DEPTH);
+  const across = scalePoint(n, halfDepth);
   const corners = [
     addPoint(addPoint(point, along), across),
     addPoint(addPoint(point, scalePoint(along, -1)), across),
@@ -1319,6 +1329,33 @@ function DatasetWallLayer({ walls }: { walls: Point2D[][] }) {
   );
 }
 
+// ─── Uploaded apartment shell (contour + its windows) ────────────────────────
+// An apartment JSON carries the shell only: the outer contour, its entrance
+// door and its windows. Rooms are traced by hand inside it afterwards, so the
+// contour is display-only — it never takes part in furnishing. Its wall bands
+// go through the same DatasetWallLayer, and its entrance through EntranceLayer.
+
+type ApartmentShell = {
+  outline: Point2D[];
+  /** Openings already snapped onto their contour edge, so the wall bands can be
+   *  rebuilt whenever the wall settings change without re-reading the file. */
+  doors: EntranceDoor[];
+  windows: EntranceDoor[];
+};
+
+function ApartmentShellLayer({ shell }: { shell: ApartmentShell | null }) {
+  if (!shell) return null;
+  return (
+    <g className="apartment-shell-layer" style={{ pointerEvents: "none" }}>
+      <path className="apartment-shell-outline" d={pointsToPath(shell.outline, true)} />
+      {shell.windows.map((w, i) => {
+        const g = getPolygonWindowGeometry(shell.outline, w.point, w.width);
+        return g ? <WindowGlyph key={i} geometry={g} /> : null;
+      })}
+    </g>
+  );
+}
+
 // ─── EdgeEditor ───────────────────────────────────────────────────────────────
 
 function EdgeEditor({
@@ -1701,25 +1738,47 @@ function windowWidth(roomType: RoomToolId): number {
   return roomType === "Bathroom" || roomType === "WC" || roomType === "Kitchen" ? 1.0 : 1.5;
 }
 
-function getWindowGeometry(room: DrawnRoom, windowPt: Point2D, width?: number) {
-  if (room.points.length < 2) return null;
-  let wallA = room.points[0], wallB = room.points[1];
+/** Window glyph geometry against any closed boundary — a room polygon or the
+ *  uploaded apartment contour. The reveal is drawn toward the polygon interior. */
+function getPolygonWindowGeometry(polygon: Point2D[], windowPt: Point2D, width: number) {
+  if (polygon.length < 2) return null;
+  let wallA = polygon[0], wallB = polygon[1];
   let minDist = Infinity;
-  for (let i = 0; i < room.points.length; i++) {
-    const a = room.points[i], b = room.points[(i + 1) % room.points.length];
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
     const d = nearestPointOnSegment(windowPt, a, b).distance;
     if (d < minDist) { minDist = d; wallA = a; wallB = b; }
   }
   const dir = normalizeVector({ x: wallB.x - wallA.x, y: wallB.y - wallA.y });
   const snap = nearestPointOnSegment(windowPt, wallA, wallB).point;
-  const half = (width ?? windowWidth(room.type)) / 2;
+  const half = width / 2;
   const start = { x: snap.x - dir.x * half, y: snap.y - dir.y * half };
   const end   = { x: snap.x + dir.x * half, y: snap.y + dir.y * half };
   const normal = perpCounterClockwise(dir);
-  const inward = pointInPolygon(addPoint(snap, scalePoint(normal, 0.05)), room.points)
+  const inward = pointInPolygon(addPoint(snap, scalePoint(normal, 0.05)), polygon)
     ? normal : scalePoint(normal, -1);
   const REVEAL = 0.14;
   return { start, end, snap, inward, reveal: REVEAL };
+}
+
+function getWindowGeometry(room: DrawnRoom, windowPt: Point2D, width?: number) {
+  return getPolygonWindowGeometry(room.points, windowPt, width ?? windowWidth(room.type));
+}
+
+type WindowGeometry = NonNullable<ReturnType<typeof getPolygonWindowGeometry>>;
+
+function WindowGlyph({ geometry }: { geometry: WindowGeometry }) {
+  const { start, end, snap, inward, reveal } = geometry;
+  const inner = (p: Point2D) => addPoint(p, scalePoint(inward, -reveal));
+  return (
+    <g className="room-window">
+      <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="window-outer" />
+      <line x1={inner(start).x} y1={inner(start).y} x2={inner(end).x} y2={inner(end).y} className="window-inner" />
+      <line x1={start.x} y1={start.y} x2={inner(start).x} y2={inner(start).y} className="window-jamb" />
+      <line x1={end.x} y1={end.y} x2={inner(end).x} y2={inner(end).y} className="window-jamb" />
+      <circle className="window-center" cx={snap.x} cy={snap.y} r="0.08" />
+    </g>
+  );
 }
 
 function WindowDisplay({ room }: { room: DrawnRoom }) {
@@ -1728,18 +1787,7 @@ function WindowDisplay({ room }: { room: DrawnRoom }) {
     <>
       {room.windows.map((winPt, i) => {
         const g = getWindowGeometry(room, winPt, room.windowWidths?.[i] ?? windowWidth(room.type));
-        if (!g) return null;
-        const { start, end, snap, inward, reveal } = g;
-        const inner = (p: Point2D) => addPoint(p, scalePoint(inward, -reveal));
-        return (
-          <g key={i} className="room-window">
-            <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="window-outer" />
-            <line x1={inner(start).x} y1={inner(start).y} x2={inner(end).x} y2={inner(end).y} className="window-inner" />
-            <line x1={start.x} y1={start.y} x2={inner(start).x} y2={inner(start).y} className="window-jamb" />
-            <line x1={end.x} y1={end.y} x2={inner(end).x} y2={inner(end).y} className="window-jamb" />
-            <circle className="window-center" cx={snap.x} cy={snap.y} r="0.08" />
-          </g>
-        );
+        return g ? <WindowGlyph key={i} geometry={g} /> : null;
       })}
     </>
   );
@@ -2210,6 +2258,7 @@ function ViewerLayer({
   datasetContext,
   datasetWalls,
   datasetEntrances,
+  apartmentShell,
   showWalls,
   onCalibrationClick,
   onCalibrationMove,
@@ -2245,6 +2294,7 @@ function ViewerLayer({
   datasetContext: DatasetContextArea[];
   datasetWalls: Point2D[][];
   datasetEntrances: EntranceDoor[];
+  apartmentShell: ApartmentShell | null;
   showWalls: boolean;
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
@@ -2469,6 +2519,7 @@ function ViewerLayer({
         onSelectRoom={onSelectRoom}
       />
       {showWalls ? <DatasetWallLayer walls={datasetWalls} /> : null}
+      <ApartmentShellLayer shell={apartmentShell} />
       <EntranceLayer entrances={datasetEntrances} />
       {selectedRoom && selectable ? (
         <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="body" />
@@ -2658,6 +2709,7 @@ const initialTransform: ViewerTransform = { metresAcross: 16, centerX: 0, center
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jsonInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<HTMLElement>(null);
   const [viewMode, setViewMode] = useState<"trace" | "explore">("trace");
   const [selectedTool, setSelectedTool] = useState<ToolId>("upload");
@@ -2700,6 +2752,8 @@ export default function App() {
   // Wall thickness polygons from a loaded dataset apartment — display-only. Shown by default.
   const [datasetWalls, setDatasetWalls] = useState<Point2D[][]>([]);
   const [datasetEntrances, setDatasetEntrances] = useState<EntranceDoor[]>([]);
+  const [apartmentShell, setApartmentShell] = useState<ApartmentShell | null>(null);
+  const [wallSettings, setWallSettings] = useState<WallSettings>(DEFAULT_WALL_SETTINGS);
   const [showWalls, setShowWalls] = useState(true);
 
   // Non-passive wheel listener so preventDefault actually works and prevents browser zoom
@@ -2717,6 +2771,45 @@ export default function App() {
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // ── Generated walls ─────────────────────────────────────────────────────────
+  // Walls built from the traced geometry: the uploaded apartment contour gives
+  // the outer walls, the room polygons give the inner partitions. Door and
+  // window openings are cut out so each is a real gap with jamb ends. Dataset
+  // apartments ship their own wall polygons, so nothing is generated for them.
+  const generatedWalls = useMemo<Point2D[][]>(() => {
+    if (datasetWalls.length) return [];
+    const { outer, inner } = wallSettings;
+    const bands: Point2D[][] = [];
+
+    if (apartmentShell && outer.enabled) {
+      bands.push(...buildWallBands(apartmentShell.outline, outer.thickness, outer.offset));
+    }
+    if (inner.enabled) {
+      // Room edges traced along the apartment contour are already carried by the
+      // outer wall — skip them so the two don't stack into a double-thick wall.
+      const onShell = apartmentShell
+        ? (a: Point2D, b: Point2D) =>
+            distPointToPolygonBoundary(a, apartmentShell.outline) < SHELL_EDGE_TOLERANCE &&
+            distPointToPolygonBoundary(b, apartmentShell.outline) < SHELL_EDGE_TOLERANCE
+        : undefined;
+      for (const room of rooms) {
+        bands.push(...buildWallBands(room.points, inner.thickness, inner.offset, onShell));
+      }
+    }
+    if (!bands.length) return [];
+
+    const shellOpenings = apartmentShell ? [...apartmentShell.doors, ...apartmentShell.windows] : [];
+    // The cutter must cross the thickest wall it may hit, whatever it is set to.
+    const halfDepth = Math.max(0.3, Math.max(outer.thickness, inner.thickness) * 1.5);
+    try {
+      return cutOpeningsInWalls(bands, inner.enabled ? rooms : [], shellOpenings, halfDepth);
+    } catch {
+      return bands;
+    }
+  }, [apartmentShell, rooms, wallSettings, datasetWalls]);
+
+  const visibleWalls = datasetWalls.length ? datasetWalls : generatedWalls;
 
   // Feature B: auto-furnish on layout changes after the first manual furnish.
   // The signature captures only layout inputs (rooms + pipelineConfig), never
@@ -2781,6 +2874,7 @@ export default function App() {
     setDatasetContext([]);
     setDatasetWalls([]);
     setDatasetEntrances([]);
+    setApartmentShell(null);
     setSelectedTool("upload");
   }
 
@@ -3354,6 +3448,7 @@ export default function App() {
     setDatasetContext(contextAreas);
     setDatasetWalls(gappedWalls);
     setDatasetEntrances(entrances);
+    setApartmentShell(null);
     setFurnishedRooms([]);
     setSelectedRoomId(null);
     setSelectedFurnitureKey(null);
@@ -3396,6 +3491,101 @@ export default function App() {
       setFurnishedRooms([]);
       setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
     }
+  }
+
+  // ── Apartment JSON (shell only — rooms are traced by hand afterwards) ───────
+
+  /** Load an uploaded apartment shell: contour, entrance door and windows. The
+   *  contour is display-only; the drawing state is cleared so the rooms can be
+   *  traced inside it. Throws with a user-facing message on a bad document. */
+  function handleLoadApartmentShell(text: string) {
+    const parsed = parseApartmentJson(text);
+
+    // Translate so the bounding-box min corner sits at (1, 1) — same convention
+    // as the dataset loader, since the canvas prefers positive coordinates.
+    let minX = Infinity, minY = Infinity;
+    for (const p of parsed.outline) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+    }
+    const shiftX = 1 - minX;
+    const shiftY = 1 - minY;
+    const translate = (p: Point2D): Point2D => ({ x: p.x + shiftX, y: p.y + shiftY });
+    const outline = parsed.outline.map(translate);
+
+    // Openings are snapped onto their nearest contour edge, so a midpoint that
+    // is a few centimetres off the wall still reads as a clean opening.
+    const interior = polygonCentroid(outline);
+    const resolveOpening = (o: ApartmentOpening): EntranceDoor | null => {
+      const or = orientToNearestEdge(translate(o.point), [outline], interior);
+      if (!or) return null;
+      // The centroid is only a hint (it can fall outside an L-shaped contour), so
+      // the swing direction is confirmed against the contour itself.
+      const inward = pointInPolygon(addPoint(or.snap, scalePoint(or.inward, 0.05)), outline)
+        ? or.inward
+        : scalePoint(or.inward, -1);
+      return { point: or.snap, width: o.width, wallDir: or.wallDir, inward, wallA: or.wallA, wallB: or.wallB };
+    };
+    const entrances = parsed.doors.map(resolveOpening).filter((e): e is EntranceDoor => e !== null);
+    const windows = parsed.windows.map(resolveOpening).filter((e): e is EntranceDoor => e !== null);
+
+    resetScaleCalibration();
+    resetRoomDraft();
+    setRooms([]);
+    setDatasetContext([]);
+    setDatasetWalls([]);   // shell walls are generated from the Walls settings
+    setDatasetEntrances(entrances);
+    setApartmentShell({ outline, doors: entrances, windows });
+    // A thickness stated in the file wins over the current outer-wall setting.
+    if (parsed.wallThickness !== null) {
+      const t = parsed.wallThickness;
+      setWallSettings((s) => ({ ...s, outer: { ...s.outer, thickness: t } }));
+    }
+    setFurnishedRooms([]);
+    setSelectedRoomId(null);
+    setSelectedFurnitureKey(null);
+    setFurnishError(null);
+    setPipelineConfig((c) => ({ ...c, roomOverrides: {} }));
+    // Straight into tracing — the next step is drawing rooms inside the contour.
+    setSelectedTool(lastRoomTool);
+
+    // Fit the viewer on the contour with ~10% margin (plus a wall's worth).
+    const margin = parsed.wallThickness ?? wallSettings.outer.thickness;
+    let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+    for (const points of [outline]) {
+      for (const p of points) {
+        if (p.x < bMinX) bMinX = p.x;
+        if (p.y < bMinY) bMinY = p.y;
+        if (p.x > bMaxX) bMaxX = p.x;
+        if (p.y > bMaxY) bMaxY = p.y;
+      }
+    }
+    const span = Math.max(bMaxX - bMinX, bMaxY - bMinY) + 2 * margin;
+    setTransform({
+      metresAcross: Math.min(90, Math.max(8, span * 1.2)),
+      centerX: (bMinX + bMaxX) / 2,
+      centerY: (bMinY + bMaxY) / 2,
+    });
+  }
+
+  function handleJsonUploadClick() {
+    jsonInputRef.current?.click();
+  }
+
+  function handleJsonFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      try {
+        handleLoadApartmentShell(String(reader.result));
+      } catch (error) {
+        setFurnishError(error instanceof Error ? error.message : "Apartment JSON: could not read the file.");
+      }
+    });
+    reader.addEventListener("error", () => setFurnishError("Apartment JSON: could not read the file."));
+    reader.readAsText(file);
   }
 
   function handleUploadClick() {
@@ -3604,6 +3794,9 @@ export default function App() {
             pipelineConfig={pipelineConfig}
             onSelectTool={handleSelectTool}
             onUploadClick={handleUploadClick}
+            onUploadJsonClick={handleJsonUploadClick}
+            wallSettings={wallSettings}
+            onSetWallSettings={(patch) => setWallSettings((s) => ({ ...s, ...patch }))}
             onReset={handleReset}
             onFurnish={handleFurnishClick}
             onSetDrawMode={handleSetDrawMode}
@@ -3644,8 +3837,9 @@ export default function App() {
           gridStep={gridStep}
           transform={transform}
           datasetContext={datasetContext}
-          datasetWalls={datasetWalls}
+          datasetWalls={visibleWalls}
           datasetEntrances={datasetEntrances}
+          apartmentShell={apartmentShell}
           showWalls={showWalls}
           onCalibrationClick={handleScaleCalibrationClick}
           onCalibrationMove={(p) => setScaleCalibration((c) => (c.p1 ? { ...c, cursor: p } : c))}
@@ -3701,6 +3895,14 @@ export default function App() {
           accept=".png,.jpg,.jpeg,image/png,image/jpeg"
           multiple
           onChange={handleImageFileChange}
+        />
+
+        <input
+          ref={jsonInputRef}
+          className="file-input"
+          type="file"
+          accept=".json,application/json"
+          onChange={handleJsonFileChange}
         />
       </section>
       </main>
