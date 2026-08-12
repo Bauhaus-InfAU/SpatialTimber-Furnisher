@@ -1,0 +1,8 @@
+apartments with entities: 20419
+apartments converted:     20419
+apartments skipped (no furnishable rooms): 0
+rooms degenerate/dropped: 0
+rooms with WKT holes (outer ring used): 612
+unique layouts (dedup groups): 15237 (5182 duplicates, 25.4%)
+largest dup groups: [6, 6, 5, 5, 5, 5, 5, 5, 5, 5]
+requests written: 15237 -> C:\Work\SpatialTimber-Furnisher\neufert-benchmark\out\requests.jsonl

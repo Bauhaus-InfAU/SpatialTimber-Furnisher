@@ -1,0 +1,2 @@
+neufert-benchmark/out/*.jsonl filter=lfs diff=lfs merge=lfs -text
+neufert-benchmark/out/*.csv filter=lfs diff=lfs merge=lfs -text

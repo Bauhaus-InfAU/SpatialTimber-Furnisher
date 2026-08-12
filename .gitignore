@@ -48,6 +48,13 @@ Thumbs.db
 .claude/
 CLAUDE.md
 
-# Neufert dataset + benchmark outputs (large, local only)
+# Raw Neufert Swiss dataset — 433 MB upstream source, re-downloadable, local only.
+# Everything downstream of it lives in neufert-benchmark/out/ and IS committed (via LFS).
 neufert swiss dataset/
-neufert-benchmark/out/
+
+# Benchmark outputs are committed, except these:
+#   results_chunk*.jsonl — raw batch runner output, merged losslessly into
+#                          results.jsonl by merge_results.py (same 15,237 lines)
+#   chunk*.log           — batch runner logs
+neufert-benchmark/out/results_chunk*.jsonl
+neufert-benchmark/out/chunk*.log
