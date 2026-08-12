@@ -1422,23 +1422,15 @@ button {
 
 /* ─── Transition areas overlay ─────────────────────────────────────────────── */
 
-.transition-area-bbox {
-  fill: none;
-  stroke: rgba(20, 20, 19, 0.5);
-  stroke-width: 0.05;
-  stroke-linecap: round;
-  stroke-dasharray: 0.001 0.18;
-}
-
-/* Door swing/clearance rectangle shown as a transition area (Transition Zones on).
-   Filled + dotted so it reads as the door's "keep clear" zone, distinct from the
-   furniture clearance outlines. */
+/* Zones are drawn as a translucent dark wash rather than an outline: each zone
+   is directly readable as an area, and because the fills composite, any overlap
+   between two zones shows up on its own as a darker patch. The hairline edge
+   keeps a single zone legible against a busy plan. */
+.transition-area-bbox,
 .door-transition-area {
-  fill: none;
-  stroke: rgba(20, 20, 19, 0.5);
-  stroke-width: 0.05;
-  stroke-linecap: round;
-  stroke-dasharray: 0.001 0.18;
+  fill: rgba(20, 20, 19, 0.16);
+  stroke: rgba(20, 20, 19, 0.32);
+  stroke-width: 0.012;
 }
 
 .zones-toggle {
