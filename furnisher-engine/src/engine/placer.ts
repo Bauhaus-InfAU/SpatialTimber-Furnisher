@@ -75,7 +75,7 @@ function perpCCW(v: Point2D): Point2D {
 
 // ─── Point-in-polygon (ray casting, works for concave L-shapes) ───────────────
 
-function pointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
+export function pointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
   const [px, py] = pt;
   const n = polygon.length;
   let inside = false;
@@ -613,7 +613,7 @@ function dedupePlacements(options: PlacementOption[]): PlacementOption[] {
  * body bulged out — which is exactly what produced furniture hanging outside
  * non-orthogonal rooms.
  */
-function insetInside(pts: Point2D[], poly: Point2D[]): boolean {
+export function insetInside(pts: Point2D[], poly: Point2D[]): boolean {
   const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
   const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
   const MARGIN = 0.03; // metres

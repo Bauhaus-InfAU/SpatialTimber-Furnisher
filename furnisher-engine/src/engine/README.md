@@ -14,11 +14,32 @@ Pure placement logic: wall analysis, ray checks, transforms, boolean subtraction
 | `runRoomPipelineAt(room, aptType, indices, opts?)` | Same but exposes all placements per step for interactive navigation |
 | `scoreRoom(roomName, pipelineResult)` | Compute 0–100 quality score from a `PipelineWithOptions` result |
 | `getAllPlacements(room, entry, opts?)` | All valid (variant × position) placements for one entry |
+| `getFlexibleKitchenPlacements(room, aptType, name, opts?)` | Kitchen laid out from 0.6 m modules along the room's own walls (see below) |
+| `kitchenModuleCount(aptType)` | Modules a kitchen gets: 4 / 6 / 6 / 8 by apartment type |
 | `placeFurniture(room, entry, opts?)` | First valid placement, or null |
 | `subtractPolygon(poly, cutout)` | Boolean difference → largest remaining region |
 | `subtractPlacement(room, placed)` | Returns updated `roomFull` and `roomRdc` after one piece |
 | `getDoorRectangle(room)` | 4-corner door swing rectangle |
 | `doorWidth(roomName)` | 0.8 m (Bathroom/WC) or 0.9 m |
+
+---
+
+## Flexible kitchen
+
+`opts.flexibleKitchen` on either pipeline runner swaps the Kitchen step from the
+library's rigid preset counter to `kitchenFlex.ts`, which lays 0.60 × 0.60 modules
+along the room's own walls — straight, or turning one inner corner into an L that
+shares its corner module. Corners need not be square (70°–110° qualifies): both
+the shared corner cell and the counter's inner edge are mitred, so on a slanted
+wall the run stays flush and its transition zone stays parallel to each wall. Fridge, sink and hob are then assigned to modules by
+work-triangle rules (NKBA, reduced to the module grid); every other module is
+plain counter. Each non-blind module keeps a 0.60 m transition zone in front;
+zones may overlap each other, which is what lets the L close up.
+
+It places kitchens in rooms the preset route gives up on (irregular outlines,
+narrow galleys) and falls back one module at a time — a 5-module kitchen beats no
+kitchen — before relaxing the transition-zone requirement as a last resort.
+Output is an ordinary `PlacementOption`, so nothing downstream needs a special case.
 
 ---
 

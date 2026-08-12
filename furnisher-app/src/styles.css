@@ -904,6 +904,14 @@ button {
   margin-left: 0;
 }
 
+/* Kitchen-strategy switch in step 03 — a full-width row, not a trailing control,
+   so it doesn't read as part of the apartment-type buttons above it. */
+.flex-kitchen-row.ortho-inline {
+  margin-left: 0;
+  margin-bottom: 10px;
+  justify-content: space-between;
+}
+
 .wall-row.active .ortho-label {
   color: var(--text-primary);
   font-weight: 700;

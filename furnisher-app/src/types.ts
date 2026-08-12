@@ -156,6 +156,10 @@ export type PipelineStepConfig = {
 export type PipelineConfig = {
   aptTypeOverride: number | null;
   roomOverrides: Record<string, PipelineStepConfig[]>;
+  /** Build the kitchen from 0.6 m modules along the room's walls instead of
+   *  dropping in the library's preset counter block. Kitchen only — every other
+   *  room keeps its preset recipe either way. */
+  flexibleKitchen: boolean;
 };
 
 export function isRoomTool(tool: ToolId): tool is RoomToolId {

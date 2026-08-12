@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
 import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
 import type { PlacedFurniture, StepOptions, PlacementOption, PlacementOptions } from "@engine/types";
+import type { PipelineOptions } from "@engine/index";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
 import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
 import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
@@ -1170,6 +1171,15 @@ function buildCustomEntry(
   };
 }
 
+/** Everything the engine pipeline needs for one run, derived from the app config. */
+function buildPipelineOptions(config: PipelineConfig, aptType: number): PipelineOptions {
+  return {
+    pipeline: buildCustomPipeline(config),
+    library: buildCustomLibrary(config, aptType),
+    flexibleKitchen: config.flexibleKitchen,
+  };
+}
+
 function buildCustomLibrary(config: PipelineConfig, aptType: number): FurnitureLibrary {
   const extra: FurnitureEntry[] = [];
   for (const [section, steps] of Object.entries(config.roomOverrides)) {
@@ -2021,6 +2031,7 @@ function FurnitureHandles({
   selectedCandidateKey,
   onSelectCandidate,
   onCandidateDrop,
+  isFixedPiece,
 }: {
   rooms: DrawnRoom[];
   furnishedRooms: FurnishedRoomResult[];
@@ -2035,6 +2046,8 @@ function FurnitureHandles({
   selectedCandidateKey: FurnitureKey | null;
   onSelectCandidate: (key: FurnitureKey | null) => void;
   onCandidateDrop: (key: FurnitureKey, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
+  /** Pieces that cannot be re-placed by hand get no grab handle. */
+  isFixedPiece: (roomName: string, furnitureName: string) => boolean;
 }) {
   const [drag, setDrag] = useState<FurnitureDragState | null>(null);
   // Separate drag state for failed candidates — reuses the same pointer math,
@@ -2215,8 +2228,10 @@ function FurnitureHandles({
           if (!isFurnishMode || !selectedKey || selectedKey.roomId !== selectedRoomId) return null;
           const rr = furnishedRooms.find((r) => r.roomId === selectedKey.roomId);
           const room = rooms.find((r) => r.id === selectedKey.roomId);
-          const placed = rr?.steps[selectedKey.stepIndex]?.selected?.placed;
-          if (!rr || !room || !placed) return null;
+          const step = rr?.steps[selectedKey.stepIndex];
+          const placed = step?.selected?.placed;
+          if (!rr || !room || !step || !placed) return null;
+          if (isFixedPiece(rr.roomName, step.furnitureName)) return null;
           const at = getWallMidpointPt(placed);
           if (!at) return null;
           return (
@@ -2301,6 +2316,7 @@ function ViewerLayer({
   selectedCandidateKey,
   onSelectCandidate,
   onCandidateDrop,
+  isFixedPiece,
 }: {
   backgroundImages: BackgroundImage[];
   calibration: ScaleCalibration;
@@ -2338,6 +2354,7 @@ function ViewerLayer({
   selectedCandidateKey: FurnitureKey | null;
   onSelectCandidate: (key: FurnitureKey | null) => void;
   onCandidateDrop: (key: FurnitureKey, snap: Point2D, wallA: Point2D, wallB: Point2D, inward: Point2D) => void;
+  isFixedPiece: (roomName: string, furnitureName: string) => boolean;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const viewBox = `${transform.centerX - transform.metresAcross / 2} ${transform.centerY - transform.metresAcross / 2} ${transform.metresAcross} ${transform.metresAcross}`;
@@ -2564,6 +2581,7 @@ function ViewerLayer({
             selectedCandidateKey={selectedCandidateKey}
             onSelectCandidate={onSelectCandidate}
             onCandidateDrop={onCandidateDrop}
+            isFixedPiece={isFixedPiece}
           />
         );
         const roomHandlesEl = selectedRoom && selectable ? (
@@ -2572,7 +2590,10 @@ function ViewerLayer({
         // Whichever selection is active wins the top layer (its drag points take
         // priority): a selected furniture piece's handle beats the room's
         // vertex/edge handles; with only a room selected, the room handles win.
-        const furnitureSelected = selectedFurnitureKey != null;
+        // Unplaced candidates count as a selected piece too — their handle lands
+        // on the wall midpoint just as often, which is exactly where the room's
+        // own midpoint handle sits, and the topmost element takes the pointer.
+        const furnitureSelected = selectedFurnitureKey != null || selectedCandidateKey != null;
         return furnitureSelected
           ? <>{roomHandlesEl}{furnitureHandlesEl}</>
           : <>{furnitureHandlesEl}{roomHandlesEl}</>;
@@ -2763,6 +2784,7 @@ export default function App() {
   const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig>({
     aptTypeOverride: null,
     roomOverrides: {},
+    flexibleKitchen: true,
   });
   const [selectedFurnitureKey, setSelectedFurnitureKey] = useState<FurnitureKey | null>(null);
   // Failed / unplaced candidates — pure session UI state (see the rebuild effect
@@ -3162,7 +3184,7 @@ export default function App() {
   function findBestInitialResult(
     room: EngineRoom,
     aptType: number,
-    opts: { pipeline?: Pipeline; library?: FurnitureLibrary },
+    opts: PipelineOptions,
   ) {
     const initial = runRoomPipelineAt(room, aptType, [], opts);
     const stepCount = initial.steps.length;
@@ -3194,14 +3216,13 @@ export default function App() {
   function doFurnish(roomsToUse: DrawnRoom[], config: PipelineConfig) {
     const uniqueRooms = dedupeRooms(roomsToUse);
     const aptType = config.aptTypeOverride ?? inferApartmentType(uniqueRooms);
-    const customPipeline = buildCustomPipeline(config);
-    const customLibrary = buildCustomLibrary(config, aptType);
+    const pipelineOpts = buildPipelineOptions(config, aptType);
     const engineRooms = toEngineRooms(uniqueRooms);
 
     const results: FurnishedRoomResult[] = [];
     for (const { roomId, room } of engineRooms) {
       try {
-        const result = findBestInitialResult(room, aptType, { pipeline: customPipeline, library: customLibrary });
+        const result = findBestInitialResult(room, aptType, pipelineOpts);
         results.push({ roomId, roomName: room.name, steps: result.steps, warnings: Array.from(new Set(result.warnings)) });
       } catch (error) {
         results.push({ roomId, roomName: room.name, steps: [], warnings: [error instanceof Error ? error.message : "Furniture placement failed."] });
@@ -3242,6 +3263,17 @@ export default function App() {
     setPipelineConfig((c) => ({ ...c, aptTypeOverride: type }));
   }
 
+  // A flexible kitchen is generated from the room's walls, not from a library
+  // variant, so there is nothing to re-place by hand: hand-dropping it would
+  // silently swap in the preset counter block. It gets no grab handle.
+  function isFixedPiece(roomName: string, furnitureName: string): boolean {
+    return pipelineConfig.flexibleKitchen && roomName === "Kitchen" && furnitureName === "Kitchen";
+  }
+
+  function handleToggleFlexibleKitchen() {
+    setPipelineConfig((c) => ({ ...c, flexibleKitchen: !c.flexibleKitchen }));
+  }
+
   function handleUpdateRoomSteps(section: string, steps: PipelineStepConfig[]) {
     setPipelineConfig((c) => ({
       ...c,
@@ -3262,14 +3294,10 @@ export default function App() {
     const engineRoomEntry = toEngineRooms(rooms).find((r) => r.roomId === roomId);
     if (!engineRoomEntry) return;
 
-    const customPipeline = buildCustomPipeline(pipelineConfig);
-    const customLibrary = buildCustomLibrary(pipelineConfig, aptType);
-
     try {
-      const result = runRoomPipelineAt(engineRoomEntry.room, aptType, newIndices, {
-        pipeline: customPipeline,
-        library: customLibrary,
-      });
+      const result = runRoomPipelineAt(
+        engineRoomEntry.room, aptType, newIndices, buildPipelineOptions(pipelineConfig, aptType),
+      );
       setFurnishedRooms((prev) =>
         prev.map((r) =>
           r.roomId === roomId
@@ -3295,6 +3323,7 @@ export default function App() {
     if (!rr) return;
     const step = rr.steps[stepIdx];
     if (!step?.selected) return;
+    if (isFixedPiece(rr.roomName, step.furnitureName)) return;
 
     const aptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
     const customLibrary = buildCustomLibrary(pipelineConfig, aptType);
@@ -3842,6 +3871,7 @@ export default function App() {
             onSetGridStep={handleSetGridStep}
             onDownloadTemplate={handleDownloadTemplate}
             onSetAptType={handleSetAptType}
+            onToggleFlexibleKitchen={handleToggleFlexibleKitchen}
             onUpdateRoomSteps={handleUpdateRoomSteps}
             onImageSelect={selectBackgroundImage}
             onImageDelete={deleteBackgroundImage}
@@ -3899,6 +3929,7 @@ export default function App() {
           selectedCandidateKey={selectedCandidateKey}
           onSelectCandidate={setSelectedCandidateKey}
           onCandidateDrop={handleCandidateDrop}
+          isFixedPiece={isFixedPiece}
         />
 
         {isFurnished ? (

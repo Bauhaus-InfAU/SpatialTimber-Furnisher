@@ -39,6 +39,7 @@ type SidebarProps = {
   onSetGridStep: (step: number) => void;
   onDownloadTemplate: () => void;
   onSetAptType: (type: number | null) => void;
+  onToggleFlexibleKitchen: () => void;
   onUpdateRoomSteps: (section: string, steps: PipelineStepConfig[]) => void;
   onImageSelect: (id: string) => void;
   onImageDelete: (id: string) => void;
@@ -748,7 +749,7 @@ export function Sidebar({
   showFailedCandidates, onToggleFailedCandidates,
   showWalls, onToggleWalls,
   onSetDrawMode, onToggleOrtho, onToggleSnapToGrid, onSetGridStep,
-  onDownloadTemplate, onSetAptType, onUpdateRoomSteps,
+  onDownloadTemplate, onSetAptType, onToggleFlexibleKitchen, onUpdateRoomSteps,
   onImageSelect, onImageDelete, onImageUpdate,
 }: SidebarProps) {
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
@@ -929,6 +930,23 @@ export function Sidebar({
               <span className="apt-type-override-badge">override</span>
             )}
           </div>
+
+          {activeSections.includes("Kitchen") && (
+            <div className={`ortho-inline flex-kitchen-row${pipelineConfig.flexibleKitchen ? " active" : ""}`}>
+              <span
+                className="ortho-label"
+                title="Lay the kitchen out module by module (0.6 m each) along the room's own walls, placing fridge, sink and hob by work-triangle rules. Off: use the fixed preset counter for the apartment type."
+              >
+                Flexible kitchen
+              </span>
+              <button
+                type="button"
+                className={`ortho-toggle${pipelineConfig.flexibleKitchen ? " active" : ""}`}
+                onClick={onToggleFlexibleKitchen}
+                aria-pressed={pipelineConfig.flexibleKitchen}
+              />
+            </div>
+          )}
 
           {activeSections.length === 0 ? (
             <p className="step-description">Draw rooms first to configure furniture.</p>

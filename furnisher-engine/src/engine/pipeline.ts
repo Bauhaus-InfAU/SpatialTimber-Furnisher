@@ -11,9 +11,29 @@ import { roomNameToCategory, findFurnitureByName } from "../library/lookup";
 import type { PlacementOptions } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
 import { placeFurniture, getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
+import { getFlexibleKitchenPlacements } from "./kitchenFlex";
 import { subtractPolygon } from "./subtraction";
 
 export type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions };
+
+/** Options shared by both pipeline entry points. */
+export interface PipelineOptions {
+  library?: FurnitureLibrary;
+  pipeline?: Pipeline;
+  /**
+   * Build the kitchen from 0.6 m modules laid along the room's own walls
+   * (see kitchenFlex.ts) instead of dropping in the library's preset block.
+   * The preset route is used for every other room either way.
+   */
+  flexibleKitchen?: boolean;
+}
+
+/** True when this step is the kitchen counter and the flexible route owns it. */
+function usesFlexibleKitchen(
+  category: string, alternatives: string[], opts?: PipelineOptions,
+): boolean {
+  return !!opts?.flexibleKitchen && category === "Kitchen" && alternatives.includes("Kitchen");
+}
 
 // ─── Freestanding furniture ───────────────────────────────────────────────────
 //
@@ -61,7 +81,7 @@ function aabbOverlap(pts1: Point2D[], pts2: Point2D[]): boolean {
 export function runRoomPipeline(
   room: Room,
   aptType: number,
-  opts?: { library?: FurnitureLibrary; pipeline?: Pipeline },
+  opts?: PipelineOptions,
 ): PipelineResult {
   room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
@@ -86,6 +106,24 @@ export function runRoomPipeline(
   const warnings: string[]     = [];
 
   for (const alternatives of steps) {
+    const placementOptsFor = (name: string): PlacementOptions => ({
+      referenceWalls:   FREESTANDING_FURNITURE.has(name) ? undefined : originalWalls,
+      collisionPolygon: roomFullChain,
+      edgePolygon:      roomRdcChain,
+    });
+
+    if (usesFlexibleKitchen(category, alternatives, opts)) {
+      const flex = getFlexibleKitchenPlacements(room, aptType, "Kitchen", placementOptsFor("Kitchen"));
+      if (!flex.length) {
+        warnings.push(`No valid placement found for "Kitchen" — skipped`);
+        continue;
+      }
+      placed.push({ furnitureName: "Kitchen", placed: flex[0].placed });
+      roomFullChain = subtractPolygon(roomFullChain, flex[0].placed.smallCutout);
+      roomRdcChain  = subtractPolygon(roomRdcChain,  flex[0].placed.largeCutout);
+      continue;
+    }
+
     let entry = null;
     let resolvedName = "";
     for (const name of alternatives) {
@@ -100,13 +138,7 @@ export function runRoomPipeline(
       continue;
     }
 
-    const placementOpts: PlacementOptions = {
-      referenceWalls:   FREESTANDING_FURNITURE.has(resolvedName) ? undefined : originalWalls,
-      collisionPolygon: roomFullChain,
-      edgePolygon:      roomRdcChain,
-    };
-
-    const result = placeFurniture(room, entry, placementOpts);
+    const result = placeFurniture(room, entry, placementOptsFor(resolvedName));
     if (!result) {
       warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
       continue;
@@ -133,7 +165,7 @@ export function runRoomPipelineAt(
   room: Room,
   aptType: number,
   selectedIndices: number[],
-  opts?: { library?: FurnitureLibrary; pipeline?: Pipeline },
+  opts?: PipelineOptions,
 ): PipelineWithOptions {
   room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
@@ -160,6 +192,26 @@ export function runRoomPipelineAt(
 
   for (let i = 0; i < steps.length; i++) {
     const alternatives = steps[i];
+
+    // ── Flexible kitchen: options come from the module placer, not the library ──
+    if (usesFlexibleKitchen(category, alternatives, opts)) {
+      const allOptions = getFlexibleKitchenPlacements(room, aptType, "Kitchen", {
+        collisionPolygon: roomFullChain,
+        edgePolygon:      roomRdcChain,
+      });
+      if (allOptions.length === 0) {
+        warnings.push(`No valid placement found for "Kitchen" — skipped`);
+        resultSteps.push({ furnitureName: "Kitchen", allOptions: [], selectedIndex: -1, selected: null });
+        continue;
+      }
+      const idx = Math.min(Math.max(selectedIndices[i] ?? 0, 0), allOptions.length - 1);
+      const selected = allOptions[idx];
+      resultSteps.push({ furnitureName: "Kitchen", allOptions, selectedIndex: idx, selected });
+      placedSmallBboxes.push(selected.placed.transformedSmallBbox as Point2D[]);
+      roomFullChain = subtractPolygon(roomFullChain, selected.placed.smallCutout);
+      roomRdcChain  = subtractPolygon(roomRdcChain,  selected.placed.largeCutout);
+      continue;
+    }
 
     let entry = null;
     let resolvedName = "";
