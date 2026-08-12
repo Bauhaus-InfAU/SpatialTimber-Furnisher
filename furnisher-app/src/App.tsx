@@ -23,8 +23,10 @@ import type {
   CustomFurnitureDef,
 } from "./types";
 import { Sidebar } from "./Sidebar";
-import { parseApartmentJson, buildWallBands } from "./apartmentJson";
+import { parseApartmentJson } from "./apartmentJson";
 import type { ApartmentOpening } from "./apartmentJson";
+import { buildWalls, wallInnerFace } from "./walls";
+import type { WallAxis, WallPolygon } from "./walls";
 import { ExploreTab } from "./ExploreTab";
 import type { NeufertRecord } from "./NeufertBrowser";
 
@@ -477,10 +479,6 @@ function inferApartmentType(rooms: DrawnRoom[]) {
 }
 
 const ADJACENT_DOOR_THRESHOLD = 0.4; // metres
-
-// A room edge whose ends are both this close to the apartment contour counts as
-// traced ON the contour — the outer wall already covers it.
-const SHELL_EDGE_TOLERANCE = 0.12; // metres
 
 function distPointToPolygonBoundary(pt: Point2D, polygon: Point2D[]): number {
   let min = Infinity;
@@ -1329,6 +1327,27 @@ function DatasetWallLayer({ walls }: { walls: Point2D[][] }) {
   );
 }
 
+// ─── Generated walls (offset from the traced axes — see walls.ts) ────────────
+// One path per wall body, each carrying its outer ring plus any holes, so the
+// evenodd fill rule leaves the enclosed rooms empty. Same paint as the dataset
+// walls, so a traced plan and a dataset plan read identically.
+
+function GeneratedWallLayer({ walls }: { walls: WallPolygon[] }) {
+  if (!walls.length) return null;
+  return (
+    <g className="dataset-wall-layer" style={{ pointerEvents: "none" }}>
+      {walls.map((poly, i) => (
+        <path
+          key={i}
+          className="dataset-wall"
+          fillRule="evenodd"
+          d={poly.map((ring) => pointsToPath(ring, true)).join(" ")}
+        />
+      ))}
+    </g>
+  );
+}
+
 // ─── Uploaded apartment shell (contour + its windows) ────────────────────────
 // An apartment JSON carries the shell only: the outer contour, its entrance
 // door and its windows. Rooms are traced by hand inside it afterwards, so the
@@ -1343,11 +1362,13 @@ type ApartmentShell = {
   windows: EntranceDoor[];
 };
 
-function ApartmentShellLayer({ shell }: { shell: ApartmentShell | null }) {
+function ApartmentShellLayer({ shell, showOutline }: { shell: ApartmentShell | null; showOutline: boolean }) {
   if (!shell) return null;
   return (
     <g className="apartment-shell-layer" style={{ pointerEvents: "none" }}>
-      <path className="apartment-shell-outline" d={pointsToPath(shell.outline, true)} />
+      {/* With outer walls on, the wall body already draws the contour — the bare
+          axis line would only cut through its fill. */}
+      {showOutline ? <path className="apartment-shell-outline" d={pointsToPath(shell.outline, true)} /> : null}
       {shell.windows.map((w, i) => {
         const g = getPolygonWindowGeometry(shell.outline, w.point, w.width);
         return g ? <WindowGlyph key={i} geometry={g} /> : null;
@@ -2259,6 +2280,7 @@ function ViewerLayer({
   datasetWalls,
   datasetEntrances,
   apartmentShell,
+  generatedWalls,
   showWalls,
   onCalibrationClick,
   onCalibrationMove,
@@ -2295,6 +2317,7 @@ function ViewerLayer({
   datasetWalls: Point2D[][];
   datasetEntrances: EntranceDoor[];
   apartmentShell: ApartmentShell | null;
+  generatedWalls: WallPolygon[];
   showWalls: boolean;
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
@@ -2519,7 +2542,8 @@ function ViewerLayer({
         onSelectRoom={onSelectRoom}
       />
       {showWalls ? <DatasetWallLayer walls={datasetWalls} /> : null}
-      <ApartmentShellLayer shell={apartmentShell} />
+      {showWalls ? <GeneratedWallLayer walls={generatedWalls} /> : null}
+      <ApartmentShellLayer shell={apartmentShell} showOutline={!generatedWalls.length} />
       <EntranceLayer entrances={datasetEntrances} />
       {selectedRoom && selectable ? (
         <EdgeEditor room={selectedRoom} svgRef={svgRef} onUpdate={onUpdateRoom} onMoveRoom={onMoveRoom} layer="body" />
@@ -2777,39 +2801,52 @@ export default function App() {
   // the outer walls, the room polygons give the inner partitions. Door and
   // window openings are cut out so each is a real gap with jamb ends. Dataset
   // apartments ship their own wall polygons, so nothing is generated for them.
-  const generatedWalls = useMemo<Point2D[][]>(() => {
+  const generatedWalls = useMemo<WallPolygon[]>(() => {
     if (datasetWalls.length) return [];
     const { outer, inner } = wallSettings;
-    const bands: Point2D[][] = [];
+    const axes: WallAxis[] = [];
 
     if (apartmentShell && outer.enabled) {
-      bands.push(...buildWallBands(apartmentShell.outline, outer.thickness, outer.offset));
+      axes.push({ polygon: apartmentShell.outline, thickness: outer.thickness, offset: outer.offset });
     }
     if (inner.enabled) {
-      // Room edges traced along the apartment contour are already carried by the
-      // outer wall — skip them so the two don't stack into a double-thick wall.
-      const onShell = apartmentShell
-        ? (a: Point2D, b: Point2D) =>
-            distPointToPolygonBoundary(a, apartmentShell.outline) < SHELL_EDGE_TOLERANCE &&
-            distPointToPolygonBoundary(b, apartmentShell.outline) < SHELL_EDGE_TOLERANCE
+      // Partitions are clipped to the space the outer wall leaves clear, so a
+      // room traced right up to the contour doesn't thicken the outer wall.
+      const clip = apartmentShell
+        ? outer.enabled
+          ? wallInnerFace(apartmentShell.outline, outer.thickness, outer.offset)
+          : apartmentShell.outline
         : undefined;
       for (const room of rooms) {
-        bands.push(...buildWallBands(room.points, inner.thickness, inner.offset, onShell));
+        axes.push({ polygon: room.points, thickness: inner.thickness, offset: inner.offset, clip });
       }
     }
-    if (!bands.length) return [];
+    if (!axes.length) return [];
 
-    const shellOpenings = apartmentShell ? [...apartmentShell.doors, ...apartmentShell.windows] : [];
     // The cutter must cross the thickest wall it may hit, whatever it is set to.
     const halfDepth = Math.max(0.3, Math.max(outer.thickness, inner.thickness) * 1.5);
-    try {
-      return cutOpeningsInWalls(bands, inner.enabled ? rooms : [], shellOpenings, halfDepth);
-    } catch {
-      return bands;
+    const cutters: Array<[number, number][]> = [];
+    if (apartmentShell) {
+      for (const o of [...apartmentShell.doors, ...apartmentShell.windows]) {
+        const c = buildOpeningCutterAligned(o.point, o.width, o.wallDir, halfDepth);
+        if (c) cutters.push(c);
+      }
     }
-  }, [apartmentShell, rooms, wallSettings, datasetWalls]);
+    if (inner.enabled) {
+      for (const room of rooms) {
+        for (const door of room.doors) {
+          const c = buildDoorCutter(room, door, halfDepth);
+          if (c) cutters.push(c);
+        }
+        room.windows.forEach((win, i) => {
+          const c = buildWindowCutter(room, win, room.windowWidths?.[i] ?? windowWidth(room.type), halfDepth);
+          if (c) cutters.push(c);
+        });
+      }
+    }
 
-  const visibleWalls = datasetWalls.length ? datasetWalls : generatedWalls;
+    return buildWalls(axes, cutters);
+  }, [apartmentShell, rooms, wallSettings, datasetWalls]);
 
   // Feature B: auto-furnish on layout changes after the first manual furnish.
   // The signature captures only layout inputs (rooms + pipelineConfig), never
@@ -3837,7 +3874,8 @@ export default function App() {
           gridStep={gridStep}
           transform={transform}
           datasetContext={datasetContext}
-          datasetWalls={visibleWalls}
+          datasetWalls={datasetWalls}
+          generatedWalls={generatedWalls}
           datasetEntrances={datasetEntrances}
           apartmentShell={apartmentShell}
           showWalls={showWalls}

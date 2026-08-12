@@ -19,7 +19,7 @@
 // called `position` or `point`. `units` may be m / cm / mm. `wallThickness`
 // (metres) and `yUp` (flip the y axis on import) are optional.
 
-import type { Point2D, WallOffset } from "./types";
+import type { Point2D } from "./types";
 
 export type ApartmentOpening = { point: Point2D; width: number };
 
@@ -154,66 +154,4 @@ export function parseApartmentJson(text: string): ParsedApartment {
     windows,
     wallThickness,
   };
-}
-
-// ─── Shell wall bands ─────────────────────────────────────────────────────────
-
-function pointInRing(p: Point2D, ring: Point2D[]) {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const a = ring[i];
-    const b = ring[j];
-    const intersects =
-      a.y > p.y !== b.y > p.y &&
-      p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x;
-    if (intersects) inside = !inside;
-  }
-  return inside;
-}
-
-/** One filled wall-thickness band per polygon edge. `offset` says which side of
- *  the drawn line carries the thickness — "outer" grows away from the polygon
- *  (so the traced interior keeps its exact clear dimensions), "inner" grows into
- *  it, "midline" straddles it. Bands are over-extended by a full thickness at
- *  both ends so corners close; the overlap is invisible (same fill) and each
- *  band is its own ring, exactly like the dataset wall polygons.
- *
- *  `skipEdge` drops individual edges — used to keep room partitions from
- *  doubling up on the apartment contour they were traced against. */
-export function buildWallBands(
-  outline: Point2D[],
-  thickness: number,
-  offset: WallOffset,
-  skipEdge?: (a: Point2D, b: Point2D) => boolean,
-): Point2D[][] {
-  if (outline.length < 3 || thickness <= 0) return [];
-  // Span across the wall, measured along the OUTWARD normal.
-  const [lo, hi] =
-    offset === "outer"   ? [0, thickness] :
-    offset === "inner"   ? [-thickness, 0] :
-                           [-thickness / 2, thickness / 2];
-  const bands: Point2D[][] = [];
-  for (let i = 0; i < outline.length; i++) {
-    const a = outline[i];
-    const b = outline[(i + 1) % outline.length];
-    if (skipEdge?.(a, b)) continue;
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (len < 1e-9) continue;
-    const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
-    // Outward side decided per edge (works for any winding and for concave
-    // contours): probe just off the edge midpoint and keep the side that is
-    // outside the ring.
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    const probe = { x: -dir.y, y: dir.x };
-    const eps = Math.min(0.02, len / 4);
-    const n = pointInRing({ x: mid.x + probe.x * eps, y: mid.y + probe.y * eps }, outline)
-      ? { x: dir.y, y: -dir.x }
-      : probe;
-    const ext = thickness;
-    const a2 = { x: a.x - dir.x * ext, y: a.y - dir.y * ext };
-    const b2 = { x: b.x + dir.x * ext, y: b.y + dir.y * ext };
-    const at = (p: Point2D, d: number): Point2D => ({ x: p.x + n.x * d, y: p.y + n.y * d });
-    bands.push([at(a2, lo), at(b2, lo), at(b2, hi), at(a2, hi)]);
-  }
-  return bands;
 }
