@@ -206,12 +206,14 @@ async function main() {
           warnings: room.warnings,
           ...(room.error ? { error: room.error } : {}),
           ...(recovered ? { recovered } : {}),
+          ...(room.fallback ? { fallback: room.fallback } : {}),
           stepScores: room.stepScores,
           steps: room.steps.map(s => ({
             furnitureName: s.furnitureName,
             optionCount: s.optionCount,
             selectedVariant: s.selectedVariant,
             selectedPosition: s.selectedPosition,
+            ...(s.replaces ? { replaces: s.replaces } : {}),
             ...(geometry
               ? { geometry: s.geometry, bbox: s.bbox, smallBbox: s.smallBbox }
               : {}),
