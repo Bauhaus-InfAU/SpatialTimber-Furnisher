@@ -6,5 +6,5 @@ export type { PipelineOptions } from "./pipeline";
 export { getFlexibleKitchenPlacements, kitchenModuleCount, MODULE as KITCHEN_MODULE, CLEARANCE as KITCHEN_CLEARANCE } from "./kitchenFlex";
 export type { RoomScore, StepScore } from "./scorer";
 export { scoreRoom } from "./scorer";
-export { furnishRoom, scoreFurnishedRoom, sortOptionsByScore, searchOtherPositions, SEARCH_RUNS, isComplete, fallbacksFor, roomSection } from "./furnish";
-export type { FurnishOptions, FurnishedRoom, FurnishedRoomScore, RoomFallback, SortResult, PositionSearch } from "./furnish";
+export { furnishRoom, scoreFurnishedRoom, sortOptionsByScore, searchOtherPositions, SEARCH_RUNS, isComplete, fallbacksFor, roomSection, roomFurnished, summarizeApartment, round2 } from "./furnish";
+export type { FurnishOptions, FurnishedRoom, FurnishedRoomScore, RoomFallback, SortResult, PositionSearch, RoomTally, ApartmentSummary } from "./furnish";

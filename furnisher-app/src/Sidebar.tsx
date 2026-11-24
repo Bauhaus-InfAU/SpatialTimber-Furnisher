@@ -5,6 +5,7 @@ import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolI
 import { defaultLibrary, defaultPipeline, findFurnitureByName, resolveStep } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
+import { roomFurnished, scoreFurnishedRoom, summarizeApartment } from "@engine/index";
 
 type SidebarProps = {
   /** Kept mounted but out of view when the other tab is active — see App. */
@@ -364,6 +365,15 @@ function AddStepForm({
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function polygonArea(points: { x: number; y: number }[]): number {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return area / 2;
+}
 
 function sectionToCategory(section: string): FurnitureCategory {
   if (section === "Living room") return "Livingroom";
@@ -757,6 +767,16 @@ export function Sidebar({
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
 
   const isFurnished   = furnishedRooms.length > 0;
+  // The engine's apartment summary (as the CLI gives it): room scores weighted by area, every room furnished.
+  const apartment = isFurnished ? summarizeApartment(furnishedRooms.map((fr) => {
+    const result = { steps: fr.steps, warnings: fr.warnings };
+    const drawn  = rooms.find((r) => r.id === fr.roomId);
+    return {
+      score: scoreFurnishedRoom(fr.roomName, result, fr.fallback ?? null).score,
+      area: drawn ? Math.abs(polygonArea(drawn.points)) : 0,
+      furnished: roomFurnished(result),
+    };
+  })) : null;
   const doorCount     = rooms.reduce((sum, r) => sum + r.doors.length, 0);
   const windowCount   = rooms.reduce((sum, r) => sum + r.windows.length, 0);
 
@@ -780,8 +800,8 @@ export function Sidebar({
   const furnishableCount = rooms.filter((r) => !isCirculationRoom(r.type)).length;
   const furnishNote = rooms.length === 0
     ? "Upload a floor plan and draw your rooms."
-    : isFurnished
-    ? "Explore and adjust the placement."
+    : isFurnished && apartment
+    ? `Apartment score ${apartment.score.toFixed(1)} · ${apartment.furnished ? "every room furnished" : "not every room furnished"}. Explore and adjust the placement.`
     : furnishableCount === 0
     ? "Halls and corridors are not furnished — draw at least one other room."
     : `${furnishableCount} room${furnishableCount > 1 ? "s" : ""} ready for furnishing.`;

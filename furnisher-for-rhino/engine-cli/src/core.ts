@@ -8,7 +8,7 @@
 // runtime. Callers should silence console.log/debug/info before invoking
 // processRequest if stdout is their JSON channel.
 
-import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify, runRoomPipelineAt, furnishRoom, scoreFurnishedRoom, sortOptionsByScore } from "../../../furnisher-engine/src/engine/index";
+import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify, runRoomPipelineAt, furnishRoom, scoreFurnishedRoom, sortOptionsByScore, roomFurnished, summarizeApartment } from "../../../furnisher-engine/src/engine/index";
 import type { RoomName, Point2D } from "../../../furnisher-engine/src/layout/types";
 import type { PlacementOption } from "../../../furnisher-engine/src/engine/types";
 
@@ -18,6 +18,8 @@ export interface RoomInput {
   name: string;
   polygon: Point2D[];
   windows?: Point2D[];
+  /** Floor area (m²), the room's weight in the apartment score; default: the polygon's area. */
+  area?: number;
 }
 
 export interface Request {
@@ -87,6 +89,8 @@ export interface RoomOut {
   name: string;
   /** null when this room's computation failed (see `error`). */
   score: number | null;
+  /** The room counts as furnished: no error, and every step has a valid placement. */
+  furnished: boolean;
   stepScores: StepScoreOut[];
   steps: StepOut[];
   doors: DoorOut[];
@@ -399,7 +403,7 @@ export function processRequest(req: Request) {
     }));
 
     return {
-      name: er.name, score, stepScores, steps, doors, warnings: result.warnings,
+      name: er.name, score, furnished: roomFurnished(result), stepScores, steps, doors, warnings: result.warnings,
       ...(fb ? { fallback: { ...fb, scoreBeforePenalty: roomScore.score } } : {}),
     };
   };
@@ -414,6 +418,7 @@ export function processRequest(req: Request) {
       return {
         name: er.name,
         score: null,
+        furnished: false,
         stepScores: [],
         steps: [],
         doors: [],
@@ -423,5 +428,15 @@ export function processRequest(req: Request) {
     }
   });
 
-  return { aptType, rooms: roomsOut };
+  return { aptType, rooms: roomsOut, apartment: apartmentOf(req.rooms, roomsOut) };
+}
+
+/** The room's weight in the apartment score: its `area` when the request gives one, else its polygon's area. */
+export function roomArea(r: RoomInput): number {
+  return typeof r.area === "number" ? r.area : Math.abs(polygonSignedArea(r.polygon));
+}
+
+/** The apartment's score (area-weighted, every room of the request) and whether every room counts as furnished. */
+export function apartmentOf(inputs: RoomInput[], rooms: Pick<RoomOut, "score" | "furnished">[]) {
+  return summarizeApartment(rooms.map((r, i) => ({ score: r.score, area: roomArea(inputs[i]), furnished: r.furnished })));
 }

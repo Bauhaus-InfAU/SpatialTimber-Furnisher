@@ -357,4 +357,58 @@ export function scoreFurnishedRoom(
   return { score, scoreBeforePenalty: roomScore.score, roomScore };
 }
 
+// ─── Apartment ────────────────────────────────────────────────────────────────
+
+/** A room as the apartment summary counts it. */
+export interface RoomTally {
+  /** The room's score (null when its computation failed: counts as 0). */
+  score:     number | null;
+  /** Floor area, the room's weight in the apartment score. */
+  area:      number;
+  /** The room counts as furnished (see roomFurnished). */
+  furnished: boolean;
+}
+
+export interface ApartmentSummary {
+  /** The rooms' scores weighted by their areas, rounded to 2 decimals (0 without area). */
+  score:     number;
+  /** Every room counts as furnished. */
+  furnished: boolean;
+}
+
+/**
+ * A room counts as furnished when its computation did not fail, it has steps,
+ * and every step has a placement (a valid one, or one the user placed by hand
+ * in the app).
+ */
+export function roomFurnished(result: PipelineWithOptions | null): boolean {
+  return !!result && result.steps.length > 0 && result.steps.every(s => s.allOptions.length > 0 || s.selected !== null);
+}
+
+/** Rounds to 2 decimals as Python's round(x, 2) does: the nearer value, an exact tie (only x = k/8) to the even digit. */
+export function round2(x: number): number {
+  const eighths = x * 8;                                  // exact
+  if (Number.isInteger(eighths) && Math.abs(eighths) % 2 === 1) {
+    const hundredths = x * 100;                           // exact: ends in .5
+    const low = Math.floor(hundredths);
+    return Number(((low % 2 === 0 ? low : low + 1) / 100).toFixed(2));
+  }
+  return Number(x.toFixed(2));
+}
+
+/**
+ * The apartment's score and whether every room counts as furnished: every
+ * room of the request counts, each weighted by its area (the Composer's rule:
+ * the area-weighted mean of the room scores, rounded to 2 decimals).
+ */
+export function summarizeApartment(rooms: RoomTally[]): ApartmentSummary {
+  let wsum = 0, asum = 0, furnished = true;
+  for (const r of rooms) {
+    wsum += (r.score || 0) * r.area;
+    asum += r.area;
+    furnished = furnished && r.furnished;
+  }
+  return { score: asum ? round2(wsum / asum) : 0, furnished };
+}
+
 export type { OptionalStep };

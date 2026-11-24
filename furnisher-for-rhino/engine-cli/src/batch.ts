@@ -14,7 +14,7 @@ console.info = () => {};
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { processRequest, RoomInput } from "./core";
+import { processRequest, apartmentOf, RoomInput } from "./core";
 
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
@@ -203,6 +203,7 @@ async function main() {
           subtype: inRoom?.subtype,
           area: inRoom?.area,
           score: room.score,
+          furnished: room.furnished,
           warnings: room.warnings,
           ...(room.error ? { error: room.error } : {}),
           ...(recovered ? { recovered } : {}),
@@ -222,7 +223,9 @@ async function main() {
         };
       });
 
-      writeRow({ id, apartment_id, aptType: res0.aptType, elapsedMs, rooms });
+      // After the retries: the apartment's score and whether every room counts as furnished.
+      const apartment = apartmentOf(req.rooms, merged.map(m => m.room));
+      writeRow({ id, apartment_id, aptType: res0.aptType, elapsedMs, apartment, rooms });
     } catch (err: any) {
       const elapsedMs = Date.now() - t0;
       elapsedTimes.push(elapsedMs);
