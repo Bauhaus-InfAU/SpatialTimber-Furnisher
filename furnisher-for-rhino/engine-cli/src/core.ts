@@ -8,14 +8,9 @@
 // runtime. Callers should silence console.log/debug/info before invoking
 // processRequest if stdout is their JSON channel.
 
-import { getAllPlacements, getDoorRectangles, doorWidth, subtractPolygon, simplifyPolygon as engineSimplify } from "../../../furnisher-engine/src/engine/index";
-import { scoreRoom } from "../../../furnisher-engine/src/engine/scorer";
-import { defaultLibrary, defaultPipeline, defaultFallbacks } from "../../../furnisher-engine/src/library/loader";
-import { findFurnitureByName, resolveStep, resolveStepNearestType, roomNameToCategory } from "../../../furnisher-engine/src/library/lookup";
-import type { ResolvedStep } from "../../../furnisher-engine/src/library/lookup";
-import type { RoomName, Point2D, Room } from "../../../furnisher-engine/src/layout/types";
-import type { PlacementOption, StepOptions, PipelineWithOptions } from "../../../furnisher-engine/src/engine/types";
-import type { FallbackSet, FurnitureLibrary, Pipeline } from "../../../furnisher-engine/src/library/types";
+import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify, runRoomPipelineAt, furnishRoom, scoreFurnishedRoom, sortOptionsByScore } from "../../../furnisher-engine/src/engine/index";
+import type { RoomName, Point2D } from "../../../furnisher-engine/src/layout/types";
+import type { PlacementOption } from "../../../furnisher-engine/src/engine/types";
 
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
@@ -240,190 +235,11 @@ function buildVariantGroups(allOptions: PlacementOption[]): VariantGroup[] {
   return groups;
 }
 
-// ─── Strict clearance pipeline ───────────────────────────────────────────────
+// ─── Furnishing ───────────────────────────────────────────────────────────────
 //
-// The engine's standard runRoomPipelineAt prevents new piece N's smallBbox from
-// overlapping previous pieces' smallBboxes (via roomFullChain) and from being
-// placed inside previous pieces' largeBboxes (via roomRdcChain).
-//
-// BUT it does NOT prevent new piece N's largeBbox from containing a PREVIOUSLY
-// placed piece's smallBbox — meaning a later piece's clearance zone can engulf
-// an earlier piece's physical footprint, leaving it inaccessible.
-//
-// This pipeline adds that bidirectional check.
-
-const FREESTANDING = new Set<string>(["Dining"]);
-
-function sectionName(name: RoomName): string {
-  return name.startsWith("Children") ? "Children" : name;
-}
-
-/** AABB overlap test between two (possibly rotated) rectangle polygons.
- *  Uses min/max bounds — conservative but correct for axis-aligned bboxes,
- *  which is what the engine produces for wall-aligned furniture. */
-function aabbOverlap(pts1: Point2D[], pts2: Point2D[]): boolean {
-  if (!pts1.length || !pts2.length) return false;
-  const xs1 = pts1.map(p => p[0]), ys1 = pts1.map(p => p[1]);
-  const xs2 = pts2.map(p => p[0]), ys2 = pts2.map(p => p[1]);
-  const eps = 1e-3; // 1 mm — avoids rejecting pieces that merely share a wall edge
-  return Math.max(...xs1) > Math.min(...xs2) + eps &&
-         Math.max(...xs2) > Math.min(...xs1) + eps &&
-         Math.max(...ys1) > Math.min(...ys2) + eps &&
-         Math.max(...ys2) > Math.min(...ys1) + eps;
-}
-
-/** Chooses the library entry of pipeline step `stepIndex` (its alternatives, e.g. ["Bathtube", "Shower"]). */
-type StepChooser = (alternatives: string[], stepIndex: number) => ResolvedStep | null;
-
-interface StrictOpts {
-  library?: FurnitureLibrary;
-  pipeline?: Pipeline;
-  /** Default: the nearest-type rule (resolveStepNearestType). */
-  choose?: StepChooser;
-}
-
-function runStrictPipelineAt(
-  room: Room,
-  aptType: number,
-  selectedIndices: number[],
-  opts?: StrictOpts,
-): PipelineWithOptions {
-  const lib      = opts?.library   ?? defaultLibrary;
-  const pipeline = opts?.pipeline  ?? defaultPipeline;
-  const steps    = pipeline[sectionName(room.name)] ?? [];
-  const category = roomNameToCategory(room.name);
-  const choose   = opts?.choose ?? ((alts: string[]) => resolveStepNearestType(lib, aptType, category, alts));
-
-  const originalWalls: [Point2D, Point2D][] = room.polygon.map(
-    (a, i) => [a, room.polygon[(i + 1) % room.polygon.length]],
-  );
-
-  const doorRects = getDoorRectangles(room);
-  let roomFullChain: Point2D[] = room.polygon;
-  let roomRdcChain: Point2D[]  = room.polygon;
-  for (const rect of doorRects) roomRdcChain = subtractPolygon(roomRdcChain, rect);
-
-  // Physical footprints of all pieces placed so far.
-  const placedSmallBboxes: Point2D[][] = [];
-
-  const resultSteps: StepOptions[] = [];
-  const warnings: string[]         = [];
-
-  for (let i = 0; i < steps.length; i++) {
-    const alternatives = steps[i];
-
-    const chosen = choose(alternatives, i);
-    const entry = chosen ? chosen.entry : null;
-    const resolvedName = chosen ? chosen.name : "";
-    if (!entry) {
-      warnings.push(`No library entry for [${alternatives.join(" | ")}] in ${category} apt ${aptType} — skipped`);
-      resultSteps.push({ furnitureName: alternatives.join(" | "), allOptions: [], selectedIndex: -1, selected: null });
-      continue;
-    }
-
-    const placementOpts = {
-      referenceWalls:   FREESTANDING.has(resolvedName) ? undefined : originalWalls,
-      collisionPolygon: roomFullChain,
-      edgePolygon:      roomRdcChain,
-    };
-
-    const allRaw = getAllPlacements(room, entry, placementOpts);
-
-    if (allRaw.length === 0) {
-      warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
-      resultSteps.push({ furnitureName: resolvedName, allOptions: [], selectedIndex: -1, selected: null });
-      continue;
-    }
-
-    // Strict filter: reject options where this piece's largeBbox overlaps any
-    // previously placed piece's smallBbox (clearance zone would block a placed piece).
-    const strictOptions = allRaw.filter(opt =>
-      !placedSmallBboxes.some(prev =>
-        aabbOverlap(opt.placed.transformedBbox as unknown as Point2D[], prev),
-      ),
-    );
-
-    const useOptions = strictOptions.length > 0 ? strictOptions : allRaw;
-    if (strictOptions.length === 0) {
-      warnings.push(`"${resolvedName}": all placements interfere with clearance zones — using best available`);
-    }
-
-    const raw          = selectedIndices[i] ?? 0;
-    const selectedIndex = Math.min(Math.max(raw, 0), useOptions.length - 1);
-    const selected      = useOptions[selectedIndex];
-
-    resultSteps.push({ furnitureName: resolvedName, allOptions: useOptions, selectedIndex, selected });
-
-    placedSmallBboxes.push(selected.placed.transformedSmallBbox as unknown as Point2D[]);
-    roomFullChain = subtractPolygon(roomFullChain, selected.placed.smallCutout);
-    roomRdcChain  = subtractPolygon(roomRdcChain,  selected.placed.largeCutout);
-  }
-
-  return { steps: resultSteps, warnings };
-}
-
-// ─── Score-sort options ───────────────────────────────────────────────────────
-//
-// Greedy pass: for each step, score every option keeping previous steps at their
-// BEST GENERATION INDEX (not 0). Returns the best generation-order index per step,
-// which the caller uses to re-run the pipeline for correct geometry + downstream options.
-//
-// Also reorders each step's allOptions (in-place) so sorted index 0 = best room score.
-
-interface SortResult {
-  bestGenIndices: number[];
-  /** sortedToGen[step][sortedIdx] = generation-order index in the current run. */
-  sortedToGen: number[][];
-}
-
-function sortOptionsByScore(
-  room: Room,
-  aptType: number,
-  steps: StepOptions[],
-  opts?: StrictOpts,
-): SortResult {
-  const bestGenIdxPrev: number[] = [];
-  const bestGenIndices: number[] = [];
-  const sortedToGen: number[][] = [];
-
-  for (let si = 0; si < steps.length; si++) {
-    const step = steps[si];
-    if (step.allOptions.length <= 1) {
-      bestGenIdxPrev.push(0);
-      bestGenIndices.push(0);
-      sortedToGen.push([0]);
-      continue;
-    }
-
-    const scored: { origIdx: number; score: number }[] = [];
-    for (let oi = 0; oi < step.allOptions.length; oi++) {
-      const sels = [
-        ...bestGenIdxPrev,
-        oi,
-        ...new Array(steps.length - si - 1).fill(0),
-      ];
-      const r  = runStrictPipelineAt(room, aptType, sels, opts);
-      const rs = scoreRoom(room.name, r);
-      scored.push({ origIdx: oi, score: rs.score });
-    }
-    scored.sort((a, b) => b.score - a.score || a.origIdx - b.origIdx);
-
-    const bestGenIdx = scored[0].origIdx;
-    bestGenIdxPrev.push(bestGenIdx);
-    bestGenIndices.push(bestGenIdx);
-    // sortedToGen[si][k] = gen index of the k-th best option
-    sortedToGen.push(scored.map(s => s.origIdx));
-
-    const oldToNew = new Map(scored.map((s, ni) => [s.origIdx, ni]));
-    step.allOptions = scored.map(s => step.allOptions[s.origIdx]);
-    if (step.selectedIndex >= 0) {
-      step.selectedIndex = oldToNew.get(step.selectedIndex) ?? 0;
-    }
-    step.selected = step.allOptions[step.selectedIndex] ?? step.selected;
-  }
-
-  return { bestGenIndices, sortedToGen };
-}
+// The search (score-sorted placements, the strict clearance rule), the regular
+// pieces first and the fallbacks after, and the reduction of points live in the
+// engine (furnisher-engine/src/engine/furnish.ts), shared with the app.
 
 // ─── Door hinge selection ─────────────────────────────────────────────────────
 
@@ -436,89 +252,6 @@ function pickHingeIndex(c0: Point2D, c1: Point2D, polygon: Point2D[]): 0 | 1 {
   const nearestCornerDist = (p: Point2D) =>
     Math.min(...polygon.map(v => Math.hypot(v[0] - p[0], v[1] - p[1])));
   return nearestCornerDist(c0) <= nearestCornerDist(c1) ? 0 : 1;
-}
-
-// ─── Regular pieces first, fallbacks after ───────────────────────────────────
-//
-// A room is furnished with its regular pieces first. Only when that leaves a
-// step without any valid placement ("incomplete"), the next ways to furnish it
-// are tried, in this order, and the first one that furnishes the room
-// completely is used:
-//   1. the step's other alternative the old nearest-type way (today: the 3-room
-//      bathtub in a 1- or 2-room bathroom whose shower does not fit), no reduction;
-//   2. each rule of fallbacks.json for this room and apartment type, in file
-//      order, with the room score reduced by `penaltyPoints`.
-// When none completes the room, the regular result stands. A room that the
-// regular pieces furnish completely is therefore computed exactly as before.
-
-interface Rung {
-  choose: StepChooser;
-  /** null for the regular pieces. */
-  fallback: Omit<FallbackOut, "scoreBeforePenalty"> | null;
-}
-
-function buildRungs(
-  roomName: RoomName,
-  aptType: number,
-  lib: FurnitureLibrary,
-  pipeline: Pipeline,
-  fallbacks: FallbackSet,
-): Rung[] {
-  const section  = sectionName(roomName);
-  const steps    = pipeline[section] ?? [];
-  const category = roomNameToCategory(roomName);
-  const regular  = (alts: string[]) => resolveStep(lib, aptType, category, alts);
-  const nearest  = (alts: string[]) => resolveStepNearestType(lib, aptType, category, alts);
-  const rungs: Rung[] = [{ choose: regular, fallback: null }];
-
-  // 1. The nearest-type alternative, where it differs from the regular choice.
-  const swapped: { furnitureName: string; replaces: string }[] = [];
-  for (const alts of steps) {
-    const a = regular(alts), b = nearest(alts);
-    if (a && b && a.entry !== b.entry) swapped.push({ furnitureName: b.name, replaces: a.name });
-  }
-  if (swapped.length) {
-    rungs.push({
-      choose: nearest,
-      fallback: {
-        id: "next-alternative",
-        label: swapped.map(p => `${p.furnitureName} instead of ${p.replaces}`).join(", "),
-        penaltyPoints: 0,
-        pieces: swapped,
-      },
-    });
-  }
-
-  // 2. The fallback pieces of fallbacks.json.
-  for (const rule of fallbacks.rules) {
-    if (rule.room !== section || !rule.aptTypes.includes(aptType)) continue;
-    const pieces: { furnitureName: string; replaces: string }[] = [];
-    const byStep = new Map<number, ResolvedStep>();
-    let missing = false;
-    steps.forEach((alts, i) => {
-      const from = alts.find(n => n in rule.replace);
-      if (!from) return;
-      const ref = rule.replace[from];
-      const name = typeof ref === "string" ? ref : ref.name;
-      const type = typeof ref === "string" ? aptType : ref.aptType;
-      const entry = findFurnitureByName(lib, type, category, name);
-      if (!entry) { missing = true; return; }
-      byStep.set(i, { entry, name });
-      pieces.push({ furnitureName: name, replaces: from });
-    });
-    if (missing || !pieces.length) continue;
-    const choose: StepChooser = (alts, i) => byStep.get(i) ?? nearest(alts);
-    rungs.push({
-      choose,
-      fallback: { id: rule.id, label: rule.label, penaltyPoints: fallbacks.penaltyPoints, pieces },
-    });
-  }
-  return rungs;
-}
-
-/** True when every pipeline step of the room has at least one valid placement. */
-function isComplete(result: PipelineWithOptions): boolean {
-  return result.steps.length > 0 && result.steps.every(s => s.allOptions.length > 0);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -547,34 +280,14 @@ export function processRequest(req: Request) {
     const rawSel = req.selections?.[roomIdx] ?? [];
     const hasUserSel = rawSel.some(v => v !== 0);
 
-    // Steps 1 to 3 for one way of furnishing the room (regular pieces or a fallback).
-    const furnishWith = (opts: StrictOpts) => {
-      // ── Step 1: discover options ────────────────────────────────────────────
-      let r = runStrictPipelineAt(room, aptType, [], opts);
-
-      // ── Step 2: sort + capture gen-index maps ───────────────────────────────
-      const { bestGenIndices } = sortOptionsByScore(room, aptType, r.steps, opts);
-
-      // ── Step 3: re-run with best gen indices so downstream options are correct
-      r = runStrictPipelineAt(room, aptType, bestGenIndices, opts);
-      const sorted = sortOptionsByScore(room, aptType, r.steps, opts);
-      return { result: r, bestGenIdx2: sorted.bestGenIndices, maps2: sorted.sortedToGen };
-    };
-
-    // Regular pieces first; the fallbacks only for a room they furnish completely.
-    const rungs = buildRungs(er.name, aptType, defaultLibrary, defaultPipeline, defaultFallbacks);
-    let rung = rungs[0];
-    let opts: StrictOpts = { choose: rung.choose };
-    let run = furnishWith(opts);
-    if (!isComplete(run.result)) {
-      for (const next of rungs.slice(1)) {
-        const nextOpts: StrictOpts = { choose: next.choose };
-        const nextRun = furnishWith(nextOpts);
-        if (isComplete(nextRun.result)) { rung = next; opts = nextOpts; run = nextRun; break; }
-      }
-    }
-    let result = run.result;
-    const { bestGenIdx2, maps2 } = run;
+    // Steps 1 to 3: the engine furnishes the room (regular pieces first; the
+    // next alternative and the fallback pieces only for a room they leave incomplete).
+    // normalizePolygon has already simplified the polygon (as the engine would).
+    const furnished = furnishRoom(room, aptType, { polygonSimplified: true });
+    const opts = furnished.options;
+    let result = furnished.result;
+    const bestGenIdx2 = furnished.bestGenIndices;
+    const maps2 = furnished.sortedToGen;
 
     // ── Step 4: apply user selections with proper re-runs ─────────────────────
     //
@@ -619,7 +332,7 @@ export function processRequest(req: Request) {
           ...resolvedGenIdx.slice(0, i + 1),
           ...new Array(result.steps.length - i - 1).fill(0),
         ];
-        currentResult = runStrictPipelineAt(room, aptType, runSels, opts);
+        currentResult = runRoomPipelineAt(room, aptType, runSels, opts);
         const { bestGenIndices: newBest, sortedToGen: newMaps } =
           sortOptionsByScore(room, aptType, currentResult.steps, opts);
         currentMaps = newMaps;
@@ -632,11 +345,15 @@ export function processRequest(req: Request) {
     }
 
     // Score this room; a fallback costs its reduction of points.
-    const roomScore = scoreRoom(er.name, result);
-    const fb = rung.fallback;
-    const score = fb && fb.penaltyPoints
-      ? Math.max(0, Math.round((roomScore.score - fb.penaltyPoints) * 10) / 10)
-      : roomScore.score;
+    const { score, roomScore } = scoreFurnishedRoom(er.name, result, furnished.fallback);
+    const fb: Omit<FallbackOut, "scoreBeforePenalty"> | null = furnished.fallback
+      ? {
+          id: furnished.fallback.id,
+          label: furnished.fallback.label,
+          penaltyPoints: furnished.fallback.penaltyPoints,
+          pieces: furnished.fallback.pieces.map(p => ({ furnitureName: p.furnitureName, replaces: p.replaces })),
+        }
+      : null;
     const replacedBy = new Map((fb?.pieces ?? []).map(p => [p.furnitureName, p.replaces]));
 
     const stepScores: StepScoreOut[] = roomScore.steps.map(s => ({

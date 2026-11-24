@@ -61,9 +61,31 @@ export interface FallbackRule {
   label:    string;
 }
 
+/** A step a room may do without (e.g. the dining table of a living room). */
+export interface OptionalStep {
+  id:        string;
+  /** Pipeline section ("Living room", ...). */
+  room:      string;
+  /** The step's furniture name in placement_order.md ("Dining"). */
+  furniture: string;
+  label:     string;
+}
+
 export interface FallbackSet {
   about?:        string;
   /** Points taken off the 0–100 room score when a room needs a fallback rule. */
   penaltyPoints: number;
   rules:         FallbackRule[];
+  /** Points taken off the room score when an optional step finds no place. */
+  optionalPenaltyPoints?: number;
+  optional?:     OptionalStep[];
+}
+
+/** One piece a room uses in place of a regular one (from a fallback rule, or the step's other alternative). */
+export interface FallbackPiece {
+  furnitureName: string;
+  /** The regular furniture name it stands in for (an alternative of the step). */
+  replaces:      string;
+  /** Look the piece up for this apartment type instead of the room's own. */
+  aptType?:      number;
 }

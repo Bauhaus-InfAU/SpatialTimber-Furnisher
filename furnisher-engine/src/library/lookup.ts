@@ -1,7 +1,7 @@
 // ─── Furniture lookup: maps room/apartment types → library entries ────────────
 
 import type { RoomName, ApartmentLabel } from "../layout/types";
-import type { FurnitureCategory, FurnitureEntry, FurnitureLibrary } from "./types";
+import type { FallbackPiece, FurnitureCategory, FurnitureEntry, FurnitureLibrary } from "./types";
 
 // ─── Mappings ────────────────────────────────────────────────────────────────
 
@@ -126,4 +126,27 @@ export function resolveStep(
     if (entry) return { entry, name };
   }
   return resolveStepNearestType(library, aptType, category, alternatives);
+}
+
+/**
+ * The entry for one pipeline step as the pipeline runs it: when one of the
+ * given `pieces` stands in for an alternative of this step (a fallback piece,
+ * see default/fallbacks.json), that piece; otherwise resolveStep.
+ */
+export function resolvePipelineStep(
+  library: FurnitureLibrary,
+  aptType: number,
+  category: FurnitureCategory,
+  alternatives: string[],
+  pieces?: FallbackPiece[],
+): ResolvedStep | null {
+  if (pieces?.length) {
+    for (const name of alternatives) {
+      const piece = pieces.find((p) => p.replaces === name);
+      if (!piece) continue;
+      const entry = findFurnitureByName(library, piece.aptType ?? aptType, category, piece.furnitureName);
+      return entry ? { entry, name: piece.furnitureName } : null;
+    }
+  }
+  return resolveStep(library, aptType, category, alternatives);
 }

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import type { CSSProperties } from "react";
 import { ROOM_TOOLS, isCirculationRoom, WALL_OFFSET_OPTIONS } from "./types";
 import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef, WallSettings, WallTypeSettings } from "./types";
-import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
+import { defaultLibrary, defaultPipeline, findFurnitureByName, resolveStep } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
 
@@ -442,7 +442,7 @@ function RoomSectionPanel({
   }
   function handleChangeVariant(idx: number, delta: number) {
     const step  = steps[idx];
-    const entry = findFurnitureByName(defaultLibrary, aptType, category, step.names[0]);
+    const entry = resolveStep(defaultLibrary, aptType, category, step.names)?.entry ?? null;
     const total = entry?.pieces[0]?.variants.length ?? 1;
     const newVI = ((step.variantIndex + delta) % total + total) % total;
     commit(steps.map((s, i) => i === idx ? { ...s, variantIndex: newVI } : s));
@@ -485,7 +485,9 @@ function RoomSectionPanel({
           )}
 
           {steps.map((step, idx) => {
-            const entry        = step.custom ? null : findFurnitureByName(defaultLibrary, aptType, category, step.names[0]);
+            // The piece this step uses for the apartment type (e.g. the Shower of "Bathtube | Shower" in a 1-room apartment).
+            const resolved     = step.custom ? null : resolveStep(defaultLibrary, aptType, category, step.names);
+            const entry        = resolved ? resolved.entry : null;
             const variantTotal = entry?.pieces[0]?.variants.length ?? 1;
             const rawVariant   = step.custom ? null : (entry?.pieces[0]?.variants[step.variantIndex] ?? entry?.pieces[0]?.variants[0] ?? null);
             const origDims     = rawVariant ? getVariantDimensions(rawVariant) : null;
@@ -502,7 +504,7 @@ function RoomSectionPanel({
               <div key={step.id}>
                 <div className="furniture-step-header">
                   <div className="furniture-step-info">
-                    <span className="furniture-step-name">{step.names[0]}</span>
+                    <span className="furniture-step-name">{resolved ? resolved.name : step.names[0]}</span>
                     {!step.custom && variantTotal > 1 && (
                       <span className="furniture-step-variant">
                         <button type="button" className="variant-arrow" onClick={() => handleChangeVariant(idx, -1)}>◀</button>

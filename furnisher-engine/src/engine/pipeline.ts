@@ -5,9 +5,9 @@
 //   place piece N → subtract footprint → feed roomRdc into piece N+1
 
 import type { Point2D, Room, RoomName } from "../layout/types";
-import type { FurnitureLibrary, Pipeline } from "../library/types";
+import type { FallbackPiece, FurnitureLibrary, Pipeline } from "../library/types";
 import { defaultLibrary, defaultPipeline } from "../library/loader";
-import { roomNameToCategory, findFurnitureByName } from "../library/lookup";
+import { roomNameToCategory, resolvePipelineStep } from "../library/lookup";
 import type { PlacementOptions } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
 import { placeFurniture, getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
@@ -26,6 +26,19 @@ export interface PipelineOptions {
    * The preset route is used for every other room either way.
    */
   flexibleKitchen?: boolean;
+  /**
+   * Pieces that stand in for regular ones (a fallback of default/fallbacks.json,
+   * see furnish.ts). A step whose alternative is replaced uses the piece; every
+   * other step takes the first alternative the library has for this apartment
+   * type (resolveStep).
+   */
+  pieces?: FallbackPiece[];
+  /**
+   * The caller has already passed the polygon through simplifyPolygon (the CLI
+   * does so once per room, also for its door output); simplifying it a second
+   * time can still move a vertex, so it is left as it is.
+   */
+  polygonSimplified?: boolean;
 }
 
 /** True when this step is the kitchen counter and the flexible route owns it. */
@@ -83,7 +96,7 @@ export function runRoomPipeline(
   aptType: number,
   opts?: PipelineOptions,
 ): PipelineResult {
-  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
+  if (!opts?.polygonSimplified) room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
   const pipeline = opts?.pipeline  ?? defaultPipeline;
   const section  = roomNameToSection(room.name);
@@ -124,12 +137,9 @@ export function runRoomPipeline(
       continue;
     }
 
-    let entry = null;
-    let resolvedName = "";
-    for (const name of alternatives) {
-      entry = findFurnitureByName(lib, aptType, category, name);
-      if (entry) { resolvedName = name; break; }
-    }
+    const resolved = resolvePipelineStep(lib, aptType, category, alternatives, opts?.pieces);
+    const entry = resolved ? resolved.entry : null;
+    const resolvedName = resolved ? resolved.name : "";
 
     if (!entry) {
       warnings.push(
@@ -167,7 +177,7 @@ export function runRoomPipelineAt(
   selectedIndices: number[],
   opts?: PipelineOptions,
 ): PipelineWithOptions {
-  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
+  if (!opts?.polygonSimplified) room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const lib      = opts?.library   ?? defaultLibrary;
   const pipeline = opts?.pipeline  ?? defaultPipeline;
   const section  = roomNameToSection(room.name);
@@ -213,12 +223,9 @@ export function runRoomPipelineAt(
       continue;
     }
 
-    let entry = null;
-    let resolvedName = "";
-    for (const name of alternatives) {
-      entry = findFurnitureByName(lib, aptType, category, name);
-      if (entry) { resolvedName = name; break; }
-    }
+    const resolved = resolvePipelineStep(lib, aptType, category, alternatives, opts?.pieces);
+    const entry = resolved ? resolved.entry : null;
+    const resolvedName = resolved ? resolved.name : "";
 
     if (!entry) {
       warnings.push(
@@ -248,6 +255,9 @@ export function runRoomPipelineAt(
       (opt) => !placedSmallBboxes.some((prev) => aabbOverlap(opt.placed.transformedBbox as Point2D[], prev)),
     );
     const allOptions = strict.length > 0 ? strict : rawOptions;
+    if (rawOptions.length > 0 && strict.length === 0) {
+      warnings.push(`"${resolvedName}": all placements interfere with clearance zones — using best available`);
+    }
 
     if (allOptions.length === 0) {
       warnings.push(`No valid placement found for "${resolvedName}" — skipped`);

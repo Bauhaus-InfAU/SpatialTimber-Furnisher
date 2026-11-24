@@ -1,4 +1,5 @@
 import type { PipelineWithOptions } from "@engine/types";
+import type { RoomFallback } from "@engine/index";
 import type { RoomName } from "@layout/types";
 
 export type ToolId =
@@ -81,6 +82,8 @@ export type FurnishedRoomResult = {
   roomName: RoomName;
   steps: PipelineWithOptions["steps"];
   warnings: string[];
+  /** Set when the room needed a fallback (a smaller piece, or the step's other alternative); see the engine's furnish.ts. */
+  fallback?: RoomFallback | null;
 };
 
 // Room-type data colours — a muted, earthy set harmonised with the

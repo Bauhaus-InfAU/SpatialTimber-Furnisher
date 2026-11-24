@@ -1736,6 +1736,12 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
+.variant-panel-note {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
 .variant-score {
   font-family: var(--st-mono);
   font-size: 17px;
