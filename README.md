@@ -2,6 +2,8 @@
 
 Monorepo for the SpatialTimber automatic furniture placement system. The repo has three parts:
 
+> Coding agents: start with [`AGENTS.md`](AGENTS.md). What changed on 2026-11-24 (shower for small bathrooms, smaller fallback pieces, one furnishing logic for app and CLI, the apartment score): [`docs/2026-11-24-update.md`](docs/2026-11-24-update.md).
+
 | Folder | Role |
 |---|---|
 | `furnisher-engine/` | **The library.** All placement logic, furniture data, and scoring. |
@@ -29,6 +31,7 @@ Given a room polygon, a list of door points, and a furniture library, the engine
 ```
 furnisher-engine/src/
 ├── engine/        ← placement pipeline, wall analysis, scoring
+│   ├── furnish.ts       furnishRoom: search, fallbacks, room score, apartment summary (used by app and CLI)
 │   ├── pipeline.ts      runRoomPipeline / runRoomPipelineAt
 │   ├── placer.ts        getAllPlacements, getDoorRectangles
 │   ├── scorer.ts        scoreRoom (0–100 quality score)
@@ -37,9 +40,10 @@ furnisher-engine/src/
 ├── library/       ← furniture data and lookup
 │   ├── default/
 │   │   ├── furniture_library.json   geometry + bboxes per piece per apt type
-│   │   └── placement_order.md       which pieces go in which rooms, in what order
+│   │   ├── placement_order.md       which pieces go in which rooms, in what order
+│   │   └── fallbacks.json           smaller pieces for rooms that cannot be furnished, pieces a room may do without
 │   ├── loader.ts        loads defaults; handles Vite `?raw` import
-│   ├── lookup.ts        findFurnitureByName, roomNameToCategory, apartmentLabelToType
+│   ├── lookup.ts        findFurnitureByName, resolveStep, resolvePipelineStep, roomNameToCategory, apartmentLabelToType
 │   └── types.ts         FurnitureLibrary, FurnitureEntry, FurnitureVariant …
 └── layout/        ← shared geometry types only
     └── types.ts         Point2D, Room, RoomName, Apartment, ApartmentLabel
@@ -75,6 +79,15 @@ const { score, steps } = scoreRoom(room.name, result);
 ```
 
 `aptType` maps roughly to apartment size: 1 = studio/1-bed, 2 = 2-bed, 3 = 3-bed, 4 = 4-bed+.
+
+To furnish a room the way the app and the CLI do (the best positions, then other positions, then the step's other alternative, then the smaller fallback pieces of `fallbacks.json`), call `furnishRoom`:
+
+```ts
+import { furnishRoom, scoreFurnishedRoom, fallbacksFor } from "./src/engine";
+
+const f = furnishRoom(room, 2);           // f.result (options sorted best first), f.selection, f.fallback, f.options
+const { score, furnished } = scoreFurnishedRoom(room.name, f.result, f.fallback, 2, fallbacksFor(f.options));
+```
 
 ### Supported room names
 
@@ -138,7 +151,8 @@ The CLI (`furnisher-for-rhino/engine-cli/src/cli.ts`) defines the JSON shapes. T
     {
       "name": "Bedroom",
       "polygon": [[0,0],[4.2,0],[4.2,3.6],[0,3.6]],
-      "windows": []
+      "windows": [],
+      "area": 15.12
     }
   ],
   "doors": [[1.8, 0]],
@@ -153,6 +167,7 @@ The CLI (`furnisher-for-rhino/engine-cli/src/cli.ts`) defines the JSON shapes. T
 - `aptType` — 1–4. Omit to auto-infer from room names.
 - `selections[room][step]` — flat index (0 = best) or omit for defaults.
 - `selectionMode` — `"flat"` (one int per step) or `"variant-position"` (two ints per step: `[variantIndex, positionIndex]`).
+- `rooms[].area`: optional, m²: the room's weight in the apartment score (default: the polygon's area).
 
 **Response (stdout):**
 ```json
@@ -162,6 +177,7 @@ The CLI (`furnisher-for-rhino/engine-cli/src/cli.ts`) defines the JSON shapes. T
     {
       "name": "Bedroom",
       "score": 100.0,
+      "furnished": true,
       "steps": [
         {
           "furnitureName": "Bed",
@@ -184,7 +200,8 @@ The CLI (`furnisher-for-rhino/engine-cli/src/cli.ts`) defines the JSON shapes. T
       ],
       "warnings": []
     }
-  ]
+  ],
+  "apartment": { "score": 100.0, "furnished": true }
 }
 ```
 
@@ -194,6 +211,8 @@ The CLI (`furnisher-for-rhino/engine-cli/src/cli.ts`) defines the JSON shapes. T
 - `variantGroups` — how many positions each variant shape has. Use to build navigation UI.
 - `doors[].rect` — `[c0, c1, c2, c3]`: c0/c1 on the wall, c2/c3 inward. `hingeAtIndex` tells you which wall point is the hinge (chosen as the one closest to a room corner so the door swings into open space). Panel = hinge → inward point. Arc = quarter circle from inward point back to far wall point.
 - Options are sorted best-first: index 0 always gives the highest room score.
+- `furnished`: the room counts as furnished: every piece placed, no two pieces overlapping. `apartment`: the room scores weighted by area, and whether every room counts as furnished.
+- Since 2026-11-24 a room can also carry `fallback` (a smaller piece or the step's other alternative was used, with its points off), `missingOptional` (a piece the room may do without found no place) and `overlaps`; see [`docs/2026-11-24-update.md`](docs/2026-11-24-update.md).
 
 ### Step 2 — build the CLI bundle
 
@@ -294,7 +313,7 @@ The `bbox` of adjacent pieces may visually overlap — that is correct by design
 | `Unexpected token ',' {"rooms":...` | .NET `Encoding.UTF8` prepends a UTF-8 BOM to stdin | Use `new UTF8Encoding(false)` |
 | Furniture pieces overlap | Polygon has collinear intermediate vertices from CAD discretisation | Remove collinear points before sending |
 | Second furniture piece ignores first choice | Downstream options not re-fetched after step 0 change | Always re-send the full request when any step changes |
-| Options not sorted by quality | Engine returns options in generation order (wall × variant × position) | Score each option greedily and sort before returning (see `sortOptionsByScore` in `cli.ts`) |
+| Options not sorted by quality | `runRoomPipelineAt` returns options in generation order (wall × variant × position) | Use `furnishRoom` (`furnisher-engine/src/engine/furnish.ts`), which scores each option greedily and sorts (`sortOptionsByScore`) |
 
 ---
 
@@ -303,6 +322,15 @@ The `bbox` of adjacent pieces may visually overlap — that is correct by design
 ```powershell
 cd furnisher-engine && npm install
 cd ../furnisher-app  && npm install
+cd ../furnisher-for-rhino/engine-cli && npm install
+```
+
+## Testing
+
+```powershell
+cd furnisher-for-rhino/engine-cli
+npm run build   # the CLI bundle the test calls
+npm test        # 16 real rooms furnished the app's way and by the CLI: same pieces, options, geometry, fallback, score
 ```
 
 ## Running

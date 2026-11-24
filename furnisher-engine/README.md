@@ -175,7 +175,11 @@ warnings.forEach(w => console.warn(w));
 3. Sink
 ```
 
-Each numbered line is one placement step. `|` lists fallback alternatives — the first one found in the library is used. The section heading is the room name (use `"Children"` to cover all Children N rooms).
+Each numbered line is one placement step. `|` lists alternatives: the one the library has for the room's apartment type is used (a 1-room bathroom gets `Shower`); where that leaves the room incomplete, the alternative found for another apartment type is tried. The section heading is the room name (use `"Children"` to cover all Children N rooms).
+
+### Fallback pieces and optional pieces
+
+`src/library/default/fallbacks.json` lists what is tried when a room's regular pieces leave it incomplete: rules that replace a piece by a smaller one (bathtub 1.60 m, double bed 1.60 m, shorter kitchen counters, …), tried in file order, each costing `penaltyPoints` (2) of the room's score; and `optional` pieces a room may do without in the given apartment types (today the dining table in the living room of a 1-room apartment, `optionalPenaltyPoints` 10). `furnishRoom` (`src/engine/furnish.ts`) uses them; see [`../docs/2026-11-24-update.md`](../docs/2026-11-24-update.md).
 
 ### Furniture library
 
@@ -201,5 +205,7 @@ const result = runRoomPipeline(room, aptType, {
 ```
 
 Files in `custom/` are gitignored — they stay local and never appear in the shared repo. The defaults in `default/` are the reference; treat them as read-only.
+
+`furnishRoom` applies the default `fallbacks.json` only when neither `library` nor `pipeline` is passed; with your own library or pipeline, pass `fallbacks` yourself if you want them.
 
 You can also construct the library or pipeline objects in code without any files, and pass them the same way.

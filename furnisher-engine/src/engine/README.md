@@ -10,6 +10,10 @@ Pure placement logic: wall analysis, ray checks, transforms, boolean subtraction
 
 | Export | Description |
 |---|---|
+| `furnishRoom(room, aptType, opts?)` | Furnish a room the way the app and the CLI do: regular pieces at their ranked positions, then at other positions, then the step's other alternative, then the fallback pieces of `fallbacks.json` (`furnish.ts`) |
+| `scoreFurnishedRoom(roomName, result, fallback, aptType?, fallbacks?)` | The room's score less the fallback's and an optional piece's points, and whether it counts as furnished |
+| `summarizeApartment(rooms)` | Area-weighted apartment score (2 decimals) and whether every room counts as furnished |
+| `sortOptionsByScore`, `searchOtherPositions`, `roomFurnished`, `pieceOverlaps` | The parts of `furnishRoom` (see `furnish.ts`) |
 | `runRoomPipeline(room, aptType, opts?)` | Place all furniture for a room; returns first valid placement per step |
 | `runRoomPipelineAt(room, aptType, indices, opts?)` | Same but exposes all placements per step for interactive navigation |
 | `scoreRoom(roomName, pipelineResult)` | Compute 0–100 quality score from a `PipelineWithOptions` result |
@@ -100,6 +104,8 @@ runRoomPipeline(room, aptType, { library: myLib, pipeline: myPipeline })
 ```
 
 Defaults to whatever `library/loader.ts` resolved at startup.
+
+Further options: `pieces` (fallback pieces that stand in for regular ones, as `furnishRoom` sets them), `polygonSimplified` (the caller has already simplified the polygon, as the CLI does), and for `furnishRoom` `fallbacks` (default `fallbacks.json` only when no custom library or pipeline is given) and `searchRuns` (bound of the search for other positions, default 300, 0 = off).
 
 ---
 

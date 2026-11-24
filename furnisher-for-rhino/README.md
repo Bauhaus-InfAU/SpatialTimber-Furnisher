@@ -28,8 +28,10 @@ Rhino layers ─▶ FurnishComponent (C#/.gha)
 
 - [`engine-cli/`](engine-cli) bundles `furnisher-engine/src` into one
   self-contained Node file (`dist/furnisher-cli.cjs`) and exposes a stdin→stdout
-  JSON contract. The CLI mirrors the app's door-assignment, apartment-type
-  inference, and polygon-winding normalisation so layouts match the app.
+  JSON contract. It reads the request, assigns doors to rooms, infers the
+  apartment type and normalises the polygons; the furnishing itself (search,
+  fallback pieces, room score, apartment summary) is the engine's `furnishRoom`,
+  the same function the app calls.
 - [`plugin/`](plugin) is the Rhino 8 Grasshopper component. It shells out to the
   CLI, so the placement math is literally the same code the app runs.
 
@@ -147,3 +149,20 @@ You can exercise the engine bridge directly:
 
 You should get JSON with a `Bed` step (`optionCount` ~11) and a `Wardrobe` step,
 each carrying `geometry` and `bbox` point arrays.
+
+Since 2026-11-24 the answer also carries `furnished` per room and
+`apartment: {score, furnished}`, and where it applies `fallback`, `missingOptional`
+and `overlaps` per room; see [`../docs/2026-11-24-update.md`](../docs/2026-11-24-update.md).
+
+## Test
+
+```powershell
+cd engine-cli
+npm run build
+npm test
+```
+
+`npm test` (`engine-cli/test/app-and-cli.ts`, rooms in `test/cases.json`) furnishes
+16 rooms from real apartments the app's way through the engine and with the
+built CLI, and checks that both give the same pieces, option counts, geometry,
+fallback, score and `furnished`, and what each case expects.
