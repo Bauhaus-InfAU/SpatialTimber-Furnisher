@@ -5,7 +5,7 @@ import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolI
 import { defaultLibrary, defaultPipeline, findFurnitureByName, resolveStep } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
-import { roomFurnished, scoreFurnishedRoom, summarizeApartment } from "@engine/index";
+import { scoreFurnishedRoom, summarizeApartment } from "@engine/index";
 
 type SidebarProps = {
   /** Kept mounted but out of view when the other tab is active — see App. */
@@ -771,11 +771,8 @@ export function Sidebar({
   const apartment = isFurnished ? summarizeApartment(furnishedRooms.map((fr) => {
     const result = { steps: fr.steps, warnings: fr.warnings };
     const drawn  = rooms.find((r) => r.id === fr.roomId);
-    return {
-      score: scoreFurnishedRoom(fr.roomName, result, fr.fallback ?? null).score,
-      area: drawn ? Math.abs(polygonArea(drawn.points)) : 0,
-      furnished: roomFurnished(result),
-    };
+    const scored = scoreFurnishedRoom(fr.roomName, result, fr.fallback ?? null, fr.aptType, fr.fallbacks);
+    return { score: scored.score, area: drawn ? Math.abs(polygonArea(drawn.points)) : 0, furnished: scored.furnished };
   })) : null;
   const doorCount     = rooms.reduce((sum, r) => sum + r.doors.length, 0);
   const windowCount   = rooms.reduce((sum, r) => sum + r.windows.length, 0);

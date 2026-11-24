@@ -27,7 +27,7 @@ interface Case {
   name: string;
   source: string;
   request: { rooms: { name: string; polygon: Point2D[]; windows?: Point2D[] }[]; doors: Point2D[]; aptType: number };
-  expect?: { pieces?: string[]; fallback?: string | null };
+  expect?: { pieces?: string[]; fallback?: string | null; furnished?: boolean; score?: number };
 }
 
 const here = dirname(process.argv[2]); // test/app-and-cli.ts, passed by run.mjs
@@ -77,7 +77,8 @@ for (const c of cases) {
 
   const f = furnishRoom(room, c.request.aptType, appOptions);
   const app = runRoomPipelineAt(room, c.request.aptType, f.selection, f.options);
-  const appScore = scoreFurnishedRoom(room.name, app, f.fallback).score;
+  const appScored = scoreFurnishedRoom(room.name, app, f.fallback, c.request.aptType, appOptions.fallbacks);
+  const appScore = appScored.score;
   const appSteps = app.steps.map(s => ({
     piece: s.furnitureName, options: s.allOptions.length,
     geometry: round(s.selected ? s.selected.placed.transformedGeometry.map(g => g.points) : []),
@@ -92,13 +93,16 @@ for (const c of cases) {
   const problems: string[] = [];
   if (JSON.stringify(appSteps) !== JSON.stringify(cliSteps)) problems.push("steps differ");
   if (appScore !== cr.score) problems.push(`score app ${appScore} cli ${cr.score}`);
+  if (appScored.furnished !== cr.furnished) problems.push(`furnished app ${appScored.furnished} cli ${cr.furnished}`);
+  if (c.expect && "furnished" in c.expect && c.expect.furnished !== cr.furnished) problems.push(`furnished ${cr.furnished}, expected ${c.expect.furnished}`);
+  if (c.expect && "score" in c.expect && c.expect.score !== cr.score) problems.push(`score ${cr.score}, expected ${c.expect.score}`);
   const appFb = f.fallback?.id ?? null, cliFb = cr.fallback?.id ?? null;
   if (appFb !== cliFb) problems.push(`fallback app ${appFb} cli ${cliFb}`);
   const pieces = appSteps.map(s => s.piece);
   if (c.expect?.pieces && JSON.stringify(c.expect.pieces) !== JSON.stringify(pieces)) problems.push(`pieces ${pieces.join(",")}, expected ${c.expect.pieces.join(",")}`);
   if (c.expect && "fallback" in c.expect && c.expect.fallback !== appFb) problems.push(`fallback ${appFb}, expected ${c.expect.fallback}`);
 
-  const line = `${c.name}: ${pieces.join(" + ")} | options ${appSteps.map(s => s.options).join("/")} | score ${appScore}${appFb ? ` | ${appFb}` : ""}`;
+  const line = `${c.name}: ${pieces.join(" + ")} | options ${appSteps.map(s => s.options).join("/")} | score ${appScore}${appFb ? ` | ${appFb}` : ""}${appScored.missingOptional ? ` | without ${appScored.missingOptional.pieces.map(p => p.furnitureName).join(", ")}` : ""} | furnished ${appScored.furnished}`;
   if (problems.length) { failed++; say(`FAIL ${line} | ${problems.join("; ")}`); }
   else say(`ok   ${line}`);
 }

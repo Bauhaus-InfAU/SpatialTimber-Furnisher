@@ -333,6 +333,15 @@ export function furnishRoom(room: Room, aptType: number, opts: FurnishOptions = 
 
 // ─── Score ────────────────────────────────────────────────────────────────────
 
+/** Steps the room did without (optional steps of fallbacks.json that found no place). */
+export interface MissingOptional {
+  pieces:             { furnitureName: string; id: string; label: string }[];
+  /** Points taken off the room score (fallbacks.json `optionalPenaltyPoints`). */
+  penaltyPoints:      number;
+  /** The room's score on its other pieces, before any reduction. */
+  scoreBeforePenalty: number;
+}
+
 export interface FurnishedRoomScore {
   /** The room's 0–100 score after the reductions. */
   score:              number;
@@ -340,21 +349,55 @@ export interface FurnishedRoomScore {
   scoreBeforePenalty: number;
   /** The engine's score per step (scoreRoom). */
   roomScore:          RoomScore;
+  /** The room counts as furnished: every step placed, or the only steps without a place are optional ones. */
+  furnished:          boolean;
+  /** Set when the room did without an optional step. */
+  missingOptional:    MissingOptional | null;
+}
+
+/** The optional steps of a fallback set for this room and apartment type. */
+export function optionalStepsFor(roomName: RoomName, aptType: number, fallbacks: FallbackSet | null): OptionalStep[] {
+  const section = roomSection(roomName);
+  return (fallbacks?.optional ?? []).filter(o => o.room === section && o.aptTypes.includes(aptType));
 }
 
 /**
- * The room's score: scoreRoom, less the fallback's reduction of points.
+ * The room's score: scoreRoom, less the fallback's reduction of points. When
+ * the only steps without a place are optional ones for this apartment type
+ * (fallbacks.json `optional`), the room is scored on its other steps (their
+ * weights rescaled), less `optionalPenaltyPoints`, and counts as furnished.
  */
 export function scoreFurnishedRoom(
   roomName: RoomName,
   result: PipelineWithOptions,
   fallback: RoomFallback | null,
+  aptType?: number,
+  fallbacks?: FallbackSet | null,
 ): FurnishedRoomScore {
   const roomScore = scoreRoom(roomName, result);
-  const score = fallback && fallback.penaltyPoints
-    ? Math.max(0, Math.round((roomScore.score - fallback.penaltyPoints) * 10) / 10)
-    : roomScore.score;
-  return { score, scoreBeforePenalty: roomScore.score, roomScore };
+  const placed = result.steps.map(s => s.allOptions.length > 0 || s.selected !== null);
+  const furnished = roomFurnished(result);
+  const fbPenalty = fallback?.penaltyPoints ?? 0;
+  const less = (v: number, p: number) => (p ? Math.max(0, Math.round((v - p) * 10) / 10) : v);
+
+  const optional = aptType === undefined ? [] : optionalStepsFor(roomName, aptType, fallbacks ?? null);
+  const unplaced = result.steps.filter((_, i) => !placed[i]);
+  if (!furnished && optional.length && unplaced.length < result.steps.length &&
+      unplaced.every(s => optional.some(o => o.furniture === s.furnitureName))) {
+    const rest = roomScore.steps.filter((_, i) => placed[i]);
+    const w = rest.reduce((sum, s) => sum + s.levelWeight, 0);
+    const base = w > 0 ? Math.round((rest.reduce((sum, s) => sum + s.nodeScore * s.levelWeight, 0) / w) * 1000) / 10 : 0;
+    const penaltyPoints = fallbacks?.optionalPenaltyPoints ?? 0;
+    const pieces = unplaced.map(s => {
+      const o = optional.find(x => x.furniture === s.furnitureName)!;
+      return { furnitureName: s.furnitureName, id: o.id, label: o.label };
+    });
+    return {
+      score: less(base, penaltyPoints + fbPenalty), scoreBeforePenalty: base, roomScore,
+      furnished: true, missingOptional: { pieces, penaltyPoints, scoreBeforePenalty: base },
+    };
+  }
+  return { score: less(roomScore.score, fbPenalty), scoreBeforePenalty: roomScore.score, roomScore, furnished, missingOptional: null };
 }
 
 // ─── Apartment ────────────────────────────────────────────────────────────────
@@ -412,3 +455,4 @@ export function summarizeApartment(rooms: RoomTally[]): ApartmentSummary {
 }
 
 export type { OptionalStep };
+export type { FallbackSet };

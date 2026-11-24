@@ -1,6 +1,16 @@
 {
-  "about": "Smaller fallback pieces. A room is first furnished with the regular pieces of placement_order.md. Only when that leaves a step without any valid placement, the rules below are tried in this order, each on its own; the first rule that furnishes the room completely is used, and the room's score is reduced by penaltyPoints (points of the 0 to 100 room score). When no rule completes the room, the regular result stands. The pieces are made by furn_library/make_fallback_pieces.py.",
+  "about": "Smaller fallback pieces. A room is first furnished with the regular pieces of placement_order.md. Only when that leaves a step without any valid placement, the rules below are tried in this order, each on its own; the first rule that furnishes the room completely is used, and the room's score is reduced by penaltyPoints (points of the 0 to 100 room score). When no rule completes the room, the regular result stands. The pieces are made by furn_library/make_fallback_pieces.py. A step listed under optional is one the room may do without in the apartment types given: when it alone finds no place, the room is scored on its other pieces less optionalPenaltyPoints and counts as furnished.",
   "penaltyPoints": 2,
+  "optionalPenaltyPoints": 10,
+  "optional": [
+    {
+      "id": "no-dining-table",
+      "room": "Living room",
+      "aptTypes": [1],
+      "furniture": "Dining",
+      "label": "no dining table"
+    }
+  ],
   "rules": [
     {
       "id": "bathtub-160",

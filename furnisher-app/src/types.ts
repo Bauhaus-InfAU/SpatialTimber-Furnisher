@@ -1,5 +1,6 @@
 import type { PipelineWithOptions } from "@engine/types";
 import type { RoomFallback } from "@engine/index";
+import type { FallbackSet } from "@library";
 import type { RoomName } from "@layout/types";
 
 export type ToolId =
@@ -84,6 +85,9 @@ export type FurnishedRoomResult = {
   warnings: string[];
   /** Set when the room needed a fallback (a smaller piece, or the step's other alternative); see the engine's furnish.ts. */
   fallback?: RoomFallback | null;
+  /** The apartment type and fallback set the room was furnished with (for its score: optional steps). */
+  aptType?: number;
+  fallbacks?: FallbackSet | null;
 };
 
 // Room-type data colours — a muted, earthy set harmonised with the

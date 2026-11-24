@@ -919,7 +919,10 @@
     "Dining"
    ],
    "fallback": null,
-   "score_8130eaf": 50
+   "score_8130eaf": 50,
+   "furnished": true,
+   "score": 90,
+   "note": "1-room apartment: no dining table, scored on the sofa less 10 points, counts as furnished (8130eaf: 50, not furnished)"
   }
  },
  {
@@ -989,7 +992,10 @@
     "Dining"
    ],
    "fallback": null,
-   "score_8130eaf": 50
+   "score_8130eaf": 50,
+   "furnished": false,
+   "score": 50,
+   "note": "3-room apartment: the dining table stays required"
   }
  },
  {

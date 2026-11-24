@@ -208,6 +208,7 @@ async function main() {
           ...(room.error ? { error: room.error } : {}),
           ...(recovered ? { recovered } : {}),
           ...(room.fallback ? { fallback: room.fallback } : {}),
+          ...(room.missingOptional ? { missingOptional: room.missingOptional } : {}),
           stepScores: room.stepScores,
           steps: room.steps.map(s => ({
             furnitureName: s.furnitureName,

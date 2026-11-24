@@ -66,6 +66,8 @@ export interface OptionalStep {
   id:        string;
   /** Pipeline section ("Living room", ...). */
   room:      string;
+  /** Apartment types where the room may do without it. */
+  aptTypes:  number[];
   /** The step's furniture name in placement_order.md ("Dining"). */
   furniture: string;
   label:     string;

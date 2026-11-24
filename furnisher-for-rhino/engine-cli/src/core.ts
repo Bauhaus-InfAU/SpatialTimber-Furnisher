@@ -8,7 +8,7 @@
 // runtime. Callers should silence console.log/debug/info before invoking
 // processRequest if stdout is their JSON channel.
 
-import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify, runRoomPipelineAt, furnishRoom, scoreFurnishedRoom, sortOptionsByScore, roomFurnished, summarizeApartment } from "../../../furnisher-engine/src/engine/index";
+import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify, runRoomPipelineAt, furnishRoom, scoreFurnishedRoom, sortOptionsByScore, summarizeApartment, fallbacksFor } from "../../../furnisher-engine/src/engine/index";
 import type { RoomName, Point2D } from "../../../furnisher-engine/src/layout/types";
 import type { PlacementOption } from "../../../furnisher-engine/src/engine/types";
 
@@ -89,7 +89,7 @@ export interface RoomOut {
   name: string;
   /** null when this room's computation failed (see `error`). */
   score: number | null;
-  /** The room counts as furnished: no error, and every step has a valid placement. */
+  /** The room counts as furnished: no error, and every step has a valid placement (or only optional steps have none). */
   furnished: boolean;
   stepScores: StepScoreOut[];
   steps: StepOut[];
@@ -97,6 +97,8 @@ export interface RoomOut {
   warnings: string[];
   /** Present when the room needed a fallback (see FallbackOut). */
   fallback?: FallbackOut;
+  /** Present when the room did without an optional step (fallbacks.json `optional`, e.g. no dining table in a 1-room apartment). */
+  missingOptional?: { pieces: { furnitureName: string; id: string; label: string }[]; penaltyPoints: number; scoreBeforePenalty: number };
   /** Present when the engine threw for this room; other rooms are unaffected. */
   error?: string;
 }
@@ -349,7 +351,8 @@ export function processRequest(req: Request) {
     }
 
     // Score this room; a fallback costs its reduction of points.
-    const { score, roomScore } = scoreFurnishedRoom(er.name, result, furnished.fallback);
+    const { score, roomScore, furnished: roomIsFurnished, missingOptional } =
+      scoreFurnishedRoom(er.name, result, furnished.fallback, aptType, fallbacksFor(opts));
     const fb: Omit<FallbackOut, "scoreBeforePenalty"> | null = furnished.fallback
       ? {
           id: furnished.fallback.id,
@@ -403,8 +406,9 @@ export function processRequest(req: Request) {
     }));
 
     return {
-      name: er.name, score, furnished: roomFurnished(result), stepScores, steps, doors, warnings: result.warnings,
+      name: er.name, score, furnished: roomIsFurnished, stepScores, steps, doors, warnings: result.warnings,
       ...(fb ? { fallback: { ...fb, scoreBeforePenalty: roomScore.score } } : {}),
+      ...(missingOptional ? { missingOptional } : {}),
     };
   };
 

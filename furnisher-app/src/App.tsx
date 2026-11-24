@@ -2758,7 +2758,8 @@ function VariantControlPanel({
 }) {
   if (roomResult.steps.length === 0) return null;
   const fallback = roomResult.fallback ?? null;
-  const { score } = scoreFurnishedRoom(roomResult.roomName, { steps: roomResult.steps, warnings: roomResult.warnings }, fallback);
+  const { score, missingOptional } = scoreFurnishedRoom(
+    roomResult.roomName, { steps: roomResult.steps, warnings: roomResult.warnings }, fallback, roomResult.aptType, roomResult.fallbacks);
   const scoreColor = score >= 80 ? "var(--st-olive)" : score >= 50 ? "var(--accent)" : "var(--accent-deep)";
   return (
     <div className="variant-panel" onClick={(e) => e.stopPropagation()}>
@@ -2769,6 +2770,11 @@ function VariantControlPanel({
       {fallback && (
         <div className="variant-panel-note">
           {fallback.label}{fallback.penaltyPoints ? ` · ${fallback.penaltyPoints} points off` : ""}
+        </div>
+      )}
+      {missingOptional && (
+        <div className="variant-panel-note">
+          {missingOptional.pieces.map((p) => p.label).join(", ")} · {missingOptional.penaltyPoints} points off
         </div>
       )}
       {roomResult.steps.map((step, i) => (
@@ -3223,7 +3229,7 @@ export default function App() {
         // order, as the variant controls expect.
         const furnished = furnishRoom(room, aptType, pipelineOpts);
         const result = runRoomPipelineAt(room, aptType, furnished.selection, furnished.options);
-        results.push({ roomId, roomName: room.name, steps: result.steps, warnings: Array.from(new Set(result.warnings)), fallback: furnished.fallback });
+        results.push({ roomId, roomName: room.name, steps: result.steps, warnings: Array.from(new Set(result.warnings)), fallback: furnished.fallback, aptType, fallbacks: pipelineOpts.fallbacks });
       } catch (error) {
         results.push({ roomId, roomName: room.name, steps: [], warnings: [error instanceof Error ? error.message : "Furniture placement failed."] });
       }
