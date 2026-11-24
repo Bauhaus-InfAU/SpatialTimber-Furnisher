@@ -1,6 +1,6 @@
 {
   "about": "Smaller fallback pieces. A room is first furnished with the regular pieces of placement_order.md. Only when that leaves a step without any valid placement, the rules below are tried in this order, each on its own; the first rule that furnishes the room completely is used, and the room's score is reduced by penaltyPoints (points of the 0 to 100 room score). When no rule completes the room, the regular result stands. The pieces are made by furn_library/make_fallback_pieces.py.",
-  "penaltyPoints": 5,
+  "penaltyPoints": 2,
   "rules": [
     {
       "id": "bathtub-160",
