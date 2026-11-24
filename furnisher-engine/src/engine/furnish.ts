@@ -6,16 +6,16 @@
 //   1. the regular pieces of placement_order.md, each step's alternative chosen
 //      for exactly this apartment type (resolveStep: 1- and 2-room bathrooms get
 //      their shower); the placements are picked by sortOptionsByScore;
-//   2. only when that leaves a step without any valid placement, the next ways
-//      are tried in this order, and the first that furnishes the room
-//      completely is used:
-//        a. the step's other alternative the old nearest-type way ("next
-//           alternative": the 3-room bathtub where the shower does not fit),
-//           no reduction of points;
-//        b. each rule of default/fallbacks.json for this room and apartment
+//   2. only when that leaves a step without any valid placement:
+//        a. the regular pieces at other positions (searchOtherPositions, bounded);
+//        b. the step's other alternative the old nearest-type way ("next
+//           alternative": the 3-room bathtub where no shower layout exists),
+//           no reduction of points, at its ranked positions, then at others;
+//        c. each rule of default/fallbacks.json for this room and apartment
 //           type, in file order (smaller pieces), the room score reduced by
-//           `penaltyPoints`.
-//      When none completes the room, the regular result stands.
+//           `penaltyPoints`, at its ranked positions, then at others.
+//      The first complete layout is used; when there is none, the regular
+//      result of 1 stands.
 //
 // A room the regular pieces furnish completely is computed exactly as before.
 
@@ -36,6 +36,11 @@ export interface FurnishOptions extends PipelineOptions {
    * library or pipeline is furnished as it is). Pass `null` for none.
    */
   fallbacks?: FallbackSet | null;
+  /**
+   * Bound of the search for other positions (pipeline runs per way of
+   * furnishing; default SEARCH_RUNS, 0 = no search).
+   */
+  searchRuns?: number;
 }
 
 /** How a room that its regular pieces leave incomplete was furnished. */
@@ -218,6 +223,78 @@ function furnishWith(room: Room, aptType: number, opts: PipelineOptions): Attemp
   return { result, selection, bestGenIndices: sorted.bestGenIndices, sortedToGen: sorted.sortedToGen };
 }
 
+// ─── Other positions ──────────────────────────────────────────────────────────
+//
+// The score sort ranks a step's positions with the later steps at their first
+// position, and keeps the best. Where that leaves a later piece without any
+// place, a complete layout may still exist with a piece at another position
+// (e.g. the shower in the other corner leaves room for toilet and washbasin).
+// searchOtherPositions tries them depth first, each step's positions in ranked
+// order, and stops at the first complete layout or after `runs` pipeline runs.
+
+/** Pipeline runs the search for other positions may take, per way of furnishing a room. */
+export const SEARCH_RUNS = 300;
+
+export interface PositionSearch {
+  /** Generation-order indices of the first complete layout found, or null. */
+  selection: number[] | null;
+  /** Pipeline runs used. */
+  runs:      number;
+  /** True when every combination was tried (the bound was not reached). */
+  exhausted: boolean;
+  /** Per piece: how often a tried layout ended with this piece finding no place. */
+  blocked:   Record<string, number>;
+}
+
+export function searchOtherPositions(
+  room: Room,
+  aptType: number,
+  opts: PipelineOptions,
+  runs: number = SEARCH_RUNS,
+): PositionSearch {
+  const out: PositionSearch = { selection: null, runs: 0, exhausted: true, blocked: {} };
+  const run = (sel: number[]) => { out.runs++; return runRoomPipelineAt(room, aptType, sel, opts); };
+  const base = run([]);
+  const n = base.steps.length;
+  const pad = (sel: number[]) => [...sel, ...new Array(Math.max(0, n - sel.length)).fill(0)];
+  if (isComplete(base)) { out.selection = pad([]); return out; }
+
+  // `at` is the run with `prefix` fixed and the later steps at their first position.
+  const visit = (prefix: number[], at: PipelineWithOptions): number[] | null => {
+    const i = prefix.length;
+    const count = at.steps[i]?.allOptions.length ?? 0;
+    if (count === 0 || i >= n - 1) {
+      const s = at.steps.find(st => st.allOptions.length === 0);
+      if (s) out.blocked[s.furnitureName] = (out.blocked[s.furnitureName] ?? 0) + 1;
+      return null;
+    }
+    const kids: { k: number; r: PipelineWithOptions; score: number }[] = [];
+    for (let k = 0; k < count; k++) {
+      if (out.runs >= runs) { out.exhausted = false; break; }
+      const r = run([...prefix, k]);
+      kids.push({ k, r, score: scoreRoom(room.name, r).score });
+    }
+    kids.sort((a, b) => b.score - a.score || a.k - b.k);
+    const done = kids.find(x => isComplete(x.r));
+    if (done) return pad([...prefix, done.k]);
+    for (const kid of kids) {
+      if (out.runs >= runs) { out.exhausted = false; return null; }
+      const found = visit([...prefix, kid.k], kid.r);
+      if (found) return found;
+    }
+    return null;
+  };
+  out.selection = visit([], base);
+  return out;
+}
+
+/** The layout at a found selection, its options sorted for the output (as furnishWith). */
+function attemptAt(room: Room, aptType: number, opts: PipelineOptions, selection: number[]): Attempt {
+  const result = runRoomPipelineAt(room, aptType, selection, opts);
+  const sorted = sortOptionsByScore(room, aptType, result.steps, opts);
+  return { result, selection, bestGenIndices: sorted.bestGenIndices, sortedToGen: sorted.sortedToGen };
+}
+
 /** The fallback set in force for these options (see FurnishOptions.fallbacks). */
 export function fallbacksFor(opts?: FurnishOptions): FallbackSet | null {
   if (opts?.fallbacks !== undefined) return opts.fallbacks;
@@ -237,15 +314,21 @@ export function furnishRoom(room: Room, aptType: number, opts: FurnishOptions = 
 
   const optionsOf = (way: Way): FurnishOptions => (way.pieces ? { ...opts, pieces: way.pieces } : opts);
 
-  let way = ways[0];
-  let attempt = furnishWith(room, aptType, optionsOf(way));
-  if (!isComplete(attempt.result)) {
-    for (const next of ways.slice(1)) {
-      const nextAttempt = furnishWith(room, aptType, optionsOf(next));
-      if (isComplete(nextAttempt.result)) { way = next; attempt = nextAttempt; break; }
+  // Each way: its pieces at the ranked positions, then at other positions
+  // (searchOtherPositions); the first complete layout wins.
+  const regular = furnishWith(room, aptType, optionsOf(ways[0]));
+  if (isComplete(regular.result)) return { ...regular, fallback: null, options: optionsOf(ways[0]) };
+  const runs = opts.searchRuns ?? SEARCH_RUNS;
+  for (const way of ways) {
+    const wayOpts = optionsOf(way);
+    const ranked = way === ways[0] ? regular : furnishWith(room, aptType, wayOpts);
+    if (isComplete(ranked.result)) return { ...ranked, fallback: way.fallback, options: wayOpts };
+    if (runs > 0) {
+      const found = searchOtherPositions(room, aptType, wayOpts, runs).selection;
+      if (found) return { ...attemptAt(room, aptType, wayOpts, found), fallback: way.fallback, options: wayOpts };
     }
   }
-  return { ...attempt, fallback: way.fallback, options: optionsOf(way) };
+  return { ...regular, fallback: null, options: optionsOf(ways[0]) };
 }
 
 // ─── Score ────────────────────────────────────────────────────────────────────

@@ -121,7 +121,7 @@
   }
  },
  {
-  "name": "bathroom-1r-next-alternative",
+  "name": "bathroom-1r-shower-other-position",
   "source": "01321a686427ce28634b2aed2d07739626694f453dd2bb06da296d4ea2ea64ad#2",
   "request": {
    "rooms": [
@@ -175,12 +175,79 @@
   },
   "expect": {
    "pieces": [
+    "Shower",
+    "Toilet",
+    "Sinc"
+   ],
+   "fallback": null,
+   "score_8130eaf": 91.7,
+   "note": "8130eaf: Bathtube through the next alternative; a complete shower layout exists with the shower at another position"
+  }
+ },
+ {
+  "name": "bathroom-1r-next-alternative",
+  "source": "09edc82ab2ea170ab0fe4fb69825503a07afb691f9a039868945c489bd5ee04e#2",
+  "request": {
+   "rooms": [
+    {
+     "name": "Bathroom",
+     "polygon": [
+      [
+       1.325,
+       5.7
+      ],
+      [
+       3.675,
+       5.7
+      ],
+      [
+       3.675,
+       7.425
+      ],
+      [
+       1.325,
+       7.425
+      ]
+     ],
+     "windows": []
+    }
+   ],
+   "doors": [
+    [
+     0.625,
+     3.05
+    ],
+    [
+     0.625,
+     3.2
+    ],
+    [
+     2.5,
+     3.125
+    ],
+    [
+     0.625,
+     7.425
+    ],
+    [
+     1.175,
+     6.875
+    ],
+    [
+     1.325,
+     6.875
+    ]
+   ],
+   "aptType": 1
+  },
+  "expect": {
+   "pieces": [
     "Bathtube",
     "Toilet",
     "Sinc"
    ],
    "fallback": "next-alternative",
-   "score_8130eaf": 91.7
+   "note": "no complete shower layout exists (every one leaves the washbasin without a place)"
   }
  },
  {
