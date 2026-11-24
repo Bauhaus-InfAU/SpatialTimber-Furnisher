@@ -89,7 +89,7 @@ export interface RoomOut {
   name: string;
   /** null when this room's computation failed (see `error`). */
   score: number | null;
-  /** The room counts as furnished: no error, and every step has a valid placement (or only optional steps have none). */
+  /** The room counts as furnished: no error, every step has a valid placement (or only optional steps have none), no pieces overlap. */
   furnished: boolean;
   stepScores: StepScoreOut[];
   steps: StepOut[];
@@ -99,6 +99,8 @@ export interface RoomOut {
   fallback?: FallbackOut;
   /** Present when the room did without an optional step (fallbacks.json `optional`, e.g. no dining table in a 1-room apartment). */
   missingOptional?: { pieces: { furnitureName: string; id: string; label: string }[]; penaltyPoints: number; scoreBeforePenalty: number };
+  /** Present when pieces of the room overlap (then the room does not count as furnished). */
+  overlaps?: { a: string; b: string; m2: number }[];
   /** Present when the engine threw for this room; other rooms are unaffected. */
   error?: string;
 }
@@ -351,7 +353,7 @@ export function processRequest(req: Request) {
     }
 
     // Score this room; a fallback costs its reduction of points.
-    const { score, roomScore, furnished: roomIsFurnished, missingOptional } =
+    const { score, roomScore, furnished: roomIsFurnished, missingOptional, overlaps } =
       scoreFurnishedRoom(er.name, result, furnished.fallback, aptType, fallbacksFor(opts));
     const fb: Omit<FallbackOut, "scoreBeforePenalty"> | null = furnished.fallback
       ? {
@@ -409,6 +411,7 @@ export function processRequest(req: Request) {
       name: er.name, score, furnished: roomIsFurnished, stepScores, steps, doors, warnings: result.warnings,
       ...(fb ? { fallback: { ...fb, scoreBeforePenalty: roomScore.score } } : {}),
       ...(missingOptional ? { missingOptional } : {}),
+      ...(overlaps.length ? { overlaps } : {}),
     };
   };
 

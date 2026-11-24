@@ -28,6 +28,8 @@ import type { PipelineOptions } from "./pipeline";
 import { scoreRoom } from "./scorer";
 import type { RoomScore } from "./scorer";
 import type { PipelineWithOptions, StepOptions } from "./types";
+import polygonClipping from "polygon-clipping";
+import type { MultiPolygon, Polygon as ClipPolygon } from "polygon-clipping";
 
 export interface FurnishOptions extends PipelineOptions {
   /**
@@ -349,8 +351,10 @@ export interface FurnishedRoomScore {
   scoreBeforePenalty: number;
   /** The engine's score per step (scoreRoom). */
   roomScore:          RoomScore;
-  /** The room counts as furnished: every step placed, or the only steps without a place are optional ones. */
+  /** The room counts as furnished: every step placed (or the only steps without a place are optional ones), no pieces overlapping. */
   furnished:          boolean;
+  /** Pieces whose solid outlines overlap (pieceOverlaps). */
+  overlaps:           PieceOverlap[];
   /** Set when the room did without an optional step. */
   missingOptional:    MissingOptional | null;
 }
@@ -376,13 +380,14 @@ export function scoreFurnishedRoom(
 ): FurnishedRoomScore {
   const roomScore = scoreRoom(roomName, result);
   const placed = result.steps.map(s => s.allOptions.length > 0 || s.selected !== null);
-  const furnished = roomFurnished(result);
+  const overlaps = pieceOverlaps(result);
+  const furnished = allPlaced(result) && overlaps.length === 0;
   const fbPenalty = fallback?.penaltyPoints ?? 0;
   const less = (v: number, p: number) => (p ? Math.max(0, Math.round((v - p) * 10) / 10) : v);
 
   const optional = aptType === undefined ? [] : optionalStepsFor(roomName, aptType, fallbacks ?? null);
   const unplaced = result.steps.filter((_, i) => !placed[i]);
-  if (!furnished && optional.length && unplaced.length < result.steps.length &&
+  if (!allPlaced(result) && optional.length && unplaced.length < result.steps.length &&
       unplaced.every(s => optional.some(o => o.furniture === s.furnitureName))) {
     const rest = roomScore.steps.filter((_, i) => placed[i]);
     const w = rest.reduce((sum, s) => sum + s.levelWeight, 0);
@@ -394,10 +399,10 @@ export function scoreFurnishedRoom(
     });
     return {
       score: less(base, penaltyPoints + fbPenalty), scoreBeforePenalty: base, roomScore,
-      furnished: true, missingOptional: { pieces, penaltyPoints, scoreBeforePenalty: base },
+      furnished: overlaps.length === 0, overlaps, missingOptional: { pieces, penaltyPoints, scoreBeforePenalty: base },
     };
   }
-  return { score: less(roomScore.score, fbPenalty), scoreBeforePenalty: roomScore.score, roomScore, furnished, missingOptional: null };
+  return { score: less(roomScore.score, fbPenalty), scoreBeforePenalty: roomScore.score, roomScore, furnished, overlaps, missingOptional: null };
 }
 
 // ─── Apartment ────────────────────────────────────────────────────────────────
@@ -421,11 +426,77 @@ export interface ApartmentSummary {
 
 /**
  * A room counts as furnished when its computation did not fail, it has steps,
- * and every step has a placement (a valid one, or one the user placed by hand
- * in the app).
+ * every step has a placement (a valid one, or one the user placed by hand in
+ * the app), and no two of its pieces overlap (pieceOverlaps).
  */
 export function roomFurnished(result: PipelineWithOptions | null): boolean {
-  return !!result && result.steps.length > 0 && result.steps.every(s => s.allOptions.length > 0 || s.selected !== null);
+  return !!result && allPlaced(result) && pieceOverlaps(result).length === 0;
+}
+
+function allPlaced(result: PipelineWithOptions): boolean {
+  return result.steps.length > 0 && result.steps.every(s => s.allOptions.length > 0 || s.selected !== null);
+}
+
+// ─── Overlapping pieces ───────────────────────────────────────────────────────
+//
+// Where every placement of a piece interferes with a clearance zone, the
+// pipeline keeps the best one anyway ("using best available"), and the piece
+// can then stand on another (e.g. the dining table on the sofa). Such a room
+// does not count as furnished. Two pieces overlap when their solid outlines
+// (the closed outlines of their geometry) share more than OVERLAP_M2 of floor.
+
+/** Floor (m²) two pieces' solid outlines may share before they count as overlapping. */
+export const OVERLAP_M2 = 0.01;
+
+export interface PieceOverlap {
+  a:  string;
+  b:  string;
+  /** The shared floor, m², 2 decimals. */
+  m2: number;
+}
+
+const GRID = 1e-7;
+const snap = (pts: [number, number][]) => pts.map(([x, y]) => [Math.round(x / GRID) * GRID, Math.round(y / GRID) * GRID] as [number, number]);
+
+function ringArea(r: [number, number][]): number {
+  let a = 0;
+  for (let i = 0; i < r.length; i++) {
+    const [x1, y1] = r[i], [x2, y2] = r[(i + 1) % r.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a / 2);
+}
+
+function area(mp: MultiPolygon): number {
+  return mp.reduce((sum, poly) => sum + ringArea(poly[0] as [number, number][]) -
+    poly.slice(1).reduce((h, ring) => h + ringArea(ring as [number, number][]), 0), 0);
+}
+
+function solidOf(step: StepOptions): MultiPolygon | null {
+  const polys: ClipPolygon[] = (step.selected?.placed.transformedGeometry ?? [])
+    .filter(g => g.closed && g.points.length >= 3)
+    .map(g => [snap(g.points as [number, number][])]);
+  if (!polys.length) return null;
+  const u = polygonClipping.union(polys[0], ...polys.slice(1));
+  return u.length ? u : null;
+}
+
+/** The pairs of the room's pieces whose solid outlines overlap by more than OVERLAP_M2, in step order. */
+export function pieceOverlaps(result: PipelineWithOptions): PieceOverlap[] {
+  const solids = result.steps.map(s => {
+    try { return solidOf(s); } catch { return null; }
+  });
+  const out: PieceOverlap[] = [];
+  for (let i = 0; i < solids.length; i++) {
+    for (let j = i + 1; j < solids.length; j++) {
+      const a = solids[i], b = solids[j];
+      if (!a || !b) continue;
+      let x = 0;
+      try { x = area(polygonClipping.intersection(a, b)); } catch { continue; }
+      if (x > OVERLAP_M2) out.push({ a: result.steps[i].furnitureName, b: result.steps[j].furnitureName, m2: Math.round(x * 100) / 100 });
+    }
+  }
+  return out;
 }
 
 /** Rounds to 2 decimals as Python's round(x, 2) does: the nearer value, an exact tie (only x = k/8) to the even digit. */
