@@ -3078,3 +3078,62 @@ button {
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
+
+/* ─── Composer archive ───────────────────────────────────────────────────────── */
+
+.explore-tab[hidden] { display: none; }
+.arch-canvas { position: absolute; inset: 0; }
+.arch-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; }
+.arch-room { stroke: none; cursor: pointer; }
+.arch-wall { fill: #3b3a36; stroke: none; }
+.arch-open { fill: none; stroke: var(--st-gray); stroke-linecap: butt; }
+.arch-inset { fill: none; stroke: var(--st-clay); stroke-dasharray: 0.08 0.06; }
+.arch-clearance { fill: rgba(217, 119, 87, 0.12); stroke: rgba(217, 119, 87, 0.55); stroke-width: 0.01; }
+.arch-openseg { stroke: rgba(106, 155, 204, 0.55); stroke-linecap: butt; }
+.arch-stoolzone { fill: rgba(106, 155, 204, 0.12); stroke: rgba(106, 155, 204, 0.6); stroke-width: 0.01; stroke-dasharray: 0.06 0.04; }
+.arch-furniture path { fill: none; stroke: var(--st-ink-2); stroke-width: 1.1; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.arch-furniture path.closed { fill: rgba(250, 249, 245, 0.55); }
+.arch-window line { stroke: #6a9bcc; }
+.arch-door line { stroke: var(--st-ink-2); stroke-linecap: butt; }
+.arch-door .swing { fill: none; stroke: var(--st-gray); }
+.arch-door.entrance line { stroke: var(--st-clay-dark); }
+.arch-door.entrance .arrow { fill: var(--st-clay-dark); stroke: none; }
+.arch-label text { text-anchor: middle; fill: var(--st-ink); font-family: var(--st-sans); font-weight: 600; paint-order: stroke; stroke: rgba(250, 249, 245, 0.8); stroke-width: 0.04; pointer-events: none; }
+.arch-label .arch-label-score { font-family: var(--st-mono); font-weight: 500; fill: var(--st-gray); }
+.arch-label .arch-label-score.differs { fill: var(--st-clay-dark); font-weight: 700; }
+.arch-card { display: flex; flex-direction: column; gap: 6px; }
+.arch-ids { font-size: 11.5px; color: var(--text-primary); word-break: break-all; }
+.arch-sub { font-size: 11px; color: var(--text-muted); line-height: 1.35; display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.arch-scores { display: flex; gap: 8px; align-items: center; }
+.arch-score-box { display: flex; flex-direction: column; flex: 1; padding: 6px 8px; border-radius: var(--st-r-sm); background: var(--ink-tint); }
+.arch-score-box.stored { background: transparent; border: 1px solid var(--border); }
+.arch-score-label { font-family: var(--st-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+.arch-score-value { font-size: 20px; font-weight: 600; color: var(--text-primary); }
+.arch-score-note { font-size: 10.5px; color: var(--text-muted); }
+.arch-delta { font-family: var(--st-mono); font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: var(--st-r-pill); }
+.arch-delta.same { color: var(--text-muted); }
+.arch-delta.up { color: #3f6b2a; background: rgba(120, 140, 93, 0.18); }
+.arch-delta.down { color: var(--st-clay-dark); background: rgba(217, 119, 87, 0.16); }
+.arch-rooms { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.arch-rooms th { text-align: left; font-weight: 500; color: var(--text-muted); font-size: 10.5px; padding: 2px 3px; }
+.arch-rooms td { padding: 3px; border-top: 1px solid var(--border); }
+.arch-rooms tr { cursor: pointer; }
+.arch-rooms tr.sel td { background: var(--ink-tint); }
+.arch-warnings { margin: 0; padding-left: 16px; font-size: 10.5px; color: var(--text-secondary); max-height: 140px; overflow-y: auto; }
+.arch-warnings li.err { color: var(--st-clay-dark); }
+.arch-step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.arch-step-name { flex: 1; }
+.arch-check { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; color: var(--text-primary); line-height: 1.35; }
+.arch-check.inline { display: inline-flex; margin-right: 10px; }
+.arch-show { display: flex; flex-wrap: wrap; }
+.arch-cmd { display: block; font-size: 10.5px; word-break: break-all; padding: 6px 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--st-r-sm); }
+.arch-gap { margin-left: 8px; }
+.viewer-surface[hidden] { display: none; }
+.apt-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; padding: 6px 12px; border-radius: var(--st-r-pill); background: var(--bg-card); border: 1px solid var(--border-strong); box-shadow: var(--st-shadow-sm); font-size: 12px; color: var(--text-secondary); z-index: 5; }
+.apt-banner b { color: var(--text-primary); }
+.apt-banner-btn { border: none; background: transparent; color: var(--accent); font-weight: 600; font-size: 12px; cursor: pointer; padding: 0; }
+.kitchen-kind { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; padding: 5px 10px; border-radius: var(--st-r-md); background: var(--bg-card); border: 1px solid var(--border-strong); font-size: 12px; z-index: 5; }
+.arch-badge { font-size: 11px; padding: 5px 8px; border-radius: var(--st-r-sm); background: rgba(217, 119, 87, 0.14); color: var(--st-clay-dark); border: 1px solid rgba(217, 119, 87, 0.4); }
+.arch-copy { border: none; background: transparent; padding: 0; font: inherit; color: inherit; cursor: copy; text-decoration: underline dotted; }
+.arch-link { font-size: 12px; font-weight: 600; color: var(--accent); text-decoration: none; align-self: flex-start; }
+.arch-link:hover { text-decoration: underline; }

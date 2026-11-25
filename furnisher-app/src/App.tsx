@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
-import { runRoomPipelineAt, getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
+import { getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
 import type { PlacedFurniture, StepOptions, PlacementOption, PlacementOptions } from "@engine/types";
 import type { PipelineOptions } from "@engine/index";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
@@ -24,12 +24,19 @@ import type {
   CustomFurnitureDef,
 } from "./types";
 import { Sidebar } from "./Sidebar";
-import { parseApartmentJson } from "./apartmentJson";
+import { parseApartmentJson, parseTemplateRooms } from "./apartmentJson";
+import type { TemplateRooms } from "./apartmentJson";
 import type { ApartmentOpening } from "./apartmentJson";
-import { buildWalls, wallInnerFace } from "./walls";
+import { buildWalls, wallInnerFace, wallSpans } from "./walls";
 import type { WallAxis, WallPolygon } from "./walls";
 import { ExploreTab } from "./ExploreTab";
 import type { NeufertRecord } from "./NeufertBrowser";
+import { ArchiveTab } from "./archive/ArchiveTab";
+import { ArchiveCanvas } from "./archive/ArchiveCanvas";
+import type { ArchiveShow } from "./archive/ArchiveCanvas";
+import { useArchive } from "./archive/useArchive";
+import type { ArchiveLayout } from "./archive/types";
+import { furnishDrawnApartment, archiveLayoutRooms, kitchenOpenings } from "./apartmentFurnish";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -847,7 +854,9 @@ type TemplatePoint = { x: number; y: number };
 type TemplateApartment = {
   id: string;
   name: string;
-  rooms: Array<{ id: string; type: string; polygon: TemplatePoint[] }>;
+  rooms: Array<{ id: string; type: string; roomType?: RoomToolId; polygon: TemplatePoint[]; subtype?: string; open?: boolean }>;
+  /** true: coordinates are in a y-up frame (a composer layout); importing negates y for the y-down canvas */
+  yUp?: boolean;
   doors?: Array<{ from: string; to: string; position: TemplatePoint; width: number }>;
   windows?: Array<{ room: string; position: TemplatePoint; width: number }>;
   entrances?: Array<{ room: string; position: TemplatePoint; width: number }>;
@@ -959,7 +968,10 @@ function buildTemplateApartment(rooms: DrawnRoom[], id: string, name: string): T
     rooms: rooms.map((room) => ({
       id: ids.get(room.id)!,
       type: TEMPLATE_ROOM_TYPE[room.type],
+      roomType: room.type,
       polygon: templatePolygon(room.points),
+      ...(room.subtype ? { subtype: room.subtype } : {}),
+      ...(room.open === true || room.open === false ? { open: room.open } : {}),
     })),
     ...(doors.length > 0 ? { doors } : {}),
     ...(windows.length > 0 ? { windows } : {}),
@@ -978,10 +990,16 @@ function buildTemplateId(rooms: DrawnRoom[], now: Date) {
   return `${Math.max(1, habitable)}r-${stamp}`;
 }
 
-function downloadTemplateJson(rooms: DrawnRoom[]) {
+function downloadTemplateJson(rooms: DrawnRoom[], yUp = false) {
   const now = new Date();
   const id = buildTemplateId(rooms, now);
-  const template = buildTemplateApartment(rooms, id, `Traced apartment ${id}`);
+  // A y-up layout (opened from the composer archive) is written in its own frame (y negated back, exact), so a
+  // reload hands the engine the very same coordinates.
+  const flip = (p: Point2D): Point2D => ({ x: p.x, y: -p.y });
+  const frameRooms = yUp
+    ? rooms.map((r) => ({ ...r, points: r.points.map(flip), doors: r.doors.map(flip), windows: r.windows.map(flip) }))
+    : rooms;
+  const template = { ...buildTemplateApartment(frameRooms, id, `Traced apartment ${id}`), ...(yUp ? { yUp: true } : {}) };
   const blob = new Blob([`${JSON.stringify(template, null, 2)}\n`], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -1020,11 +1038,10 @@ function computeLayoutSignature(rooms: DrawnRoom[], config: PipelineConfig): str
   const r = (n: number) => n.toFixed(2);
   const rel = (list: Point2D[], ox: number, oy: number) =>
     list.map((p) => `${r(p.x - ox)},${r(p.y - oy)}`).join("|");
+  // Absolute coordinates: the apartment is furnished as a whole (open kitchens, shared doors), so moving a room
+  // changes the result too.
   const roomsSig = rooms
-    .map((room) => {
-      const o = room.points[0] ?? { x: 0, y: 0 };
-      return `${room.id}:${room.type}:${rel(room.points, o.x, o.y)}:${rel(room.doors, o.x, o.y)}:${rel(room.windows, o.x, o.y)}`;
-    })
+    .map((room) => `${room.id}:${room.type}:${room.subtype ?? ""}:${room.open ?? ""}:${rel(room.points, 0, 0)}:${rel(room.doors, 0, 0)}:${rel(room.windows, 0, 0)}`)
     .join(";");
   return `${roomsSig}#${JSON.stringify(config)}`;
 }
@@ -1697,11 +1714,14 @@ function DoorSwing({
   ownedDoors,
   showAll,
   entrancePoints,
+  passagePoints,
 }: {
   room: DrawnRoom;
   ownedDoors: boolean[];
   showAll: boolean;
   entrancePoints: Point2D[];
+  /** door points on an open-kitchen opening: passages, drawn without leaf or clearance zone */
+  passagePoints: Point2D[];
 }) {
   if (!room.doors.length) return null;
   const hingeSides = doubleDoorHinges(room);
@@ -1715,6 +1735,7 @@ function DoorSwing({
         // A door that coincides with the apartment entrance is drawn by
         // EntranceLayer instead (distinct glyph); suppress the plain glyph here
         // to avoid a double swing, but keep its clearance zone.
+        if (passagePoints.some((p) => distance(p, doorPoint) < 0.05)) return null;
         const isEntrance = entrancePoints.some((e) => distance(e, doorPoint) < 0.05);
         const drawGlyph = ownedDoors[i] && !isEntrance;
         const drawZone = showAll;
@@ -1833,6 +1854,7 @@ function RoomLayer({
   selectable,
   showTransitionAreas,
   entrancePoints,
+  passagePoints,
   onSelectRoom,
 }: {
   draft: RoomDraft | null;
@@ -1843,6 +1865,7 @@ function RoomLayer({
   selectable: boolean;
   showTransitionAreas: boolean;
   entrancePoints: Point2D[];
+  passagePoints: Point2D[];
   onSelectRoom: (id: string) => void;
 }) {
   const furnishedByRoomId = new Map(furnishedRooms.map((r) => [r.roomId, r]));
@@ -1886,6 +1909,7 @@ function RoomLayer({
             ownedDoors={doorOwnership.get(room.id) ?? []}
             showAll={showTransitionAreas}
             entrancePoints={entrancePoints}
+            passagePoints={passagePoints}
           />
           <WindowDisplay room={room} />
           <FurniturePreview pieces={(furnishedByRoomId.get(room.id)?.steps ?? []).flatMap((s) => s.selected ? [s.selected.placed] : [])} />
@@ -2296,6 +2320,7 @@ function ViewerLayer({
   datasetEntrances,
   apartmentShell,
   generatedWalls,
+  passagePoints,
   showWalls,
   onCalibrationClick,
   onCalibrationMove,
@@ -2334,6 +2359,7 @@ function ViewerLayer({
   datasetEntrances: EntranceDoor[];
   apartmentShell: ApartmentShell | null;
   generatedWalls: WallPolygon[];
+  passagePoints: Point2D[];
   showWalls: boolean;
   onCalibrationClick: (point: Point2D) => void;
   onCalibrationMove: (point: Point2D) => void;
@@ -2556,6 +2582,7 @@ function ViewerLayer({
         selectable={selectable}
         showTransitionAreas={showTransitionAreas}
         entrancePoints={datasetEntrances.map((e) => e.point)}
+        passagePoints={passagePoints}
         onSelectRoom={onSelectRoom}
       />
       {showWalls ? <DatasetWallLayer walls={datasetWalls} /> : null}
@@ -2756,7 +2783,9 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<HTMLElement>(null);
-  const [viewMode, setViewMode] = useState<"trace" | "explore">("trace");
+  const [viewMode, setViewMode] = useState<"trace" | "explore" | "archive">("trace");
+  const archive = useArchive(viewMode === "archive");
+  const [archiveShow, setArchiveShow] = useState<ArchiveShow>({ furniture: true, clearances: false, openings: true, labels: true });
   const [selectedTool, setSelectedTool] = useState<ToolId>("upload");
   const [lastRoomTool, setLastRoomTool] = useState<RoomToolId>("Bedroom");
   const [isShiftHeld, setIsShiftHeld] = useState(false);
@@ -2801,6 +2830,13 @@ export default function App() {
   const [apartmentShell, setApartmentShell] = useState<ApartmentShell | null>(null);
   const [wallSettings, setWallSettings] = useState<WallSettings>(DEFAULT_WALL_SETTINGS);
   const [showWalls, setShowWalls] = useState(true);
+  // The drawn layout is in a y-up plan frame shown with y = −y (a composer archive layout): the engine gets y back.
+  const [engineFlipY, setEngineFlipY] = useState(false);
+  // Per-room option choices (sorted indices, 0 = best) replayed by the apartment-level furnish.
+  const [roomSelections, setRoomSelections] = useState<Record<string, number[]>>({});
+  const [apartmentScoreInfo, setApartmentScoreInfo] = useState<{ score: number; complete: boolean } | null>(null);
+  // The archive layout the drawing was opened from (for "back to archive" and the comparison).
+  const [fromArchive, setFromArchive] = useState<{ id: string; plId: string; aptType: string } | null>(null);
 
   // Non-passive wheel listener so preventDefault actually works and prevents browser zoom
   useEffect(() => {
@@ -2823,6 +2859,10 @@ export default function App() {
   // the outer walls, the room polygons give the inner partitions. Door and
   // window openings are cut out so each is a real gap with jamb ends. Dataset
   // apartments ship their own wall polygons, so nothing is generated for them.
+  // Open kitchens: where the engine's rule (the same one furnishing uses) finds no wall between kitchen and living
+  // room, no partition is drawn, and a door point on that opening is a passage (no leaf).
+  const openings = useMemo(() => kitchenOpenings(rooms), [rooms]);
+
   const generatedWalls = useMemo<WallPolygon[]>(() => {
     if (datasetWalls.length) return [];
     const { outer, inner } = wallSettings;
@@ -2855,8 +2895,36 @@ export default function App() {
       }
     }
     if (inner.enabled) {
+      // The partition along an opening is cut away between the walls at its two ends: an end on the apartment
+      // contour stops at the outer wall's inner face, any other end at the face of the partition meeting it.
+      const [iOut, iIn] = wallSpans(inner.thickness, inner.offset);
+      const partitionHalf = Math.max(iOut, iIn);
+      const onShell = (p: Point2D) => {
+        const ring = apartmentShell?.outline;
+        if (!ring || ring.length < 2) return false;
+        return ring.some((a, i) => nearestPointOnSegment(p, a, ring[(i + 1) % ring.length]).distance < 0.02);
+      };
+      const endInset = (p: Point2D) =>
+        onShell(p) && outer.enabled ? wallSpans(outer.thickness, outer.offset)[1] : partitionHalf;
+      for (const [a, b] of openings.segments) {
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        const ia = endInset(a);
+        const ib = endInset(b);
+        if (L - ia - ib < 0.05) continue;
+        const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+        const n = perpCounterClockwise(u);
+        const h = inner.thickness + 0.01;
+        const s = addPoint(a, scalePoint(u, ia));
+        const e = addPoint(b, scalePoint(u, -ib));
+        cutters.push([
+          addPoint(s, scalePoint(n, h)), addPoint(e, scalePoint(n, h)),
+          addPoint(e, scalePoint(n, -h)), addPoint(s, scalePoint(n, -h)),
+        ].map(toEnginePoint));
+      }
+      const isPassage = (d: Point2D) => openings.passages.some((p) => distance(p, d) < 0.05);
       for (const room of rooms) {
         for (const door of room.doors) {
+          if (isPassage(door)) continue;
           const c = buildDoorCutter(room, door, halfDepth);
           if (c) cutters.push(c);
         }
@@ -2868,7 +2936,7 @@ export default function App() {
     }
 
     return buildWalls(axes, cutters);
-  }, [apartmentShell, rooms, wallSettings, datasetWalls]);
+  }, [apartmentShell, rooms, wallSettings, datasetWalls, openings]);
 
   // Feature B: auto-furnish on layout changes after the first manual furnish.
   // The signature captures only layout inputs (rooms + pipelineConfig), never
@@ -2886,7 +2954,8 @@ export default function App() {
     const handle = window.setTimeout(() => {
       try {
         const deduped = dedupeRooms(rooms);
-        doFurnish(deduped, pipelineConfig);
+        setRoomSelections({});
+        doFurnish(deduped, pipelineConfig, {});
         lastFurnishedSignatureRef.current = layoutSignature;
         setFurnishError(null);
       } catch (error) {
@@ -2935,6 +3004,10 @@ export default function App() {
     setDatasetEntrances([]);
     setApartmentShell(null);
     setSelectedTool("upload");
+    setEngineFlipY(false);
+    setFromArchive(null);
+    setRoomSelections({});
+    setApartmentScoreInfo(null);
   }
 
   function updateBackgroundImage(id: string, patch: Partial<BackgroundImage>) {
@@ -3091,7 +3164,7 @@ export default function App() {
 
   function handleDownloadTemplate() {
     if (rooms.length === 0) return;
-    downloadTemplateJson(dedupeRooms(rooms));
+    downloadTemplateJson(dedupeRooms(rooms), engineFlipY);
   }
 
   function handleToggleSnapToGrid() {
@@ -3110,7 +3183,9 @@ export default function App() {
       if (idx !== -1) {
         setRooms((current) =>
           current.map((r) =>
-            r.id === room.id ? { ...r, doors: r.doors.filter((_, i) => i !== idx) } : r,
+            r.id === room.id
+              ? { ...r, doors: r.doors.filter((_, i) => i !== idx), ...(r.doorOrder ? { doorOrder: r.doorOrder.filter((_, i) => i !== idx) } : {}) }
+              : r,
           ),
         );
         return;
@@ -3178,57 +3253,27 @@ export default function App() {
     );
   }
 
-  // Greedy best-first: for each step in sequence, try every available option
-  // and commit to the one that gives the highest room score for the full pipeline.
-  // Complexity: O(steps × options) pipeline runs — fast in practice for typical rooms.
-  function findBestInitialResult(
-    room: EngineRoom,
-    aptType: number,
-    opts: PipelineOptions,
-  ) {
-    const initial = runRoomPipelineAt(room, aptType, [], opts);
-    const stepCount = initial.steps.length;
-    if (stepCount === 0) return initial;
-
-    const chosen: number[] = [];
-
-    for (let s = 0; s < stepCount; s++) {
-      const current = runRoomPipelineAt(room, aptType, chosen, opts);
-      const optCount = current.steps[s]?.allOptions.length ?? 0;
-
-      if (optCount <= 1) { chosen.push(0); continue; }
-
-      let bestScore = -1;
-      let bestIdx   = 0;
-      for (let opt = 0; opt < optCount; opt++) {
-        const { score } = scoreRoom(
-          room.name,
-          runRoomPipelineAt(room, aptType, [...chosen, opt], opts),
-        );
-        if (score > bestScore) { bestScore = score; bestIdx = opt; }
-      }
-      chosen.push(bestIdx);
-    }
-
-    return runRoomPipelineAt(room, aptType, chosen, opts);
-  }
-
-  function doFurnish(roomsToUse: DrawnRoom[], config: PipelineConfig) {
+  // Furnishing goes through the engine's apartment-level entry point (furnishApartment, the CLI's code): one
+  // request for the whole apartment, so open kitchens, passages, kitchens before living rooms and the bar hold.
+  function doFurnish(roomsToUse: DrawnRoom[], config: PipelineConfig, selections: Record<string, number[]> = {}, flipY = engineFlipY) {
     const uniqueRooms = dedupeRooms(roomsToUse);
+    const customised = Object.keys(config.roomOverrides).length > 0;
     const aptType = config.aptTypeOverride ?? inferApartmentType(uniqueRooms);
-    const pipelineOpts = buildPipelineOptions(config, aptType);
-    const engineRooms = toEngineRooms(uniqueRooms);
-
-    const results: FurnishedRoomResult[] = [];
-    for (const { roomId, room } of engineRooms) {
-      try {
-        const result = findBestInitialResult(room, aptType, pipelineOpts);
-        results.push({ roomId, roomName: room.name, steps: result.steps, warnings: Array.from(new Set(result.warnings)) });
-      } catch (error) {
-        results.push({ roomId, roomName: room.name, steps: [], warnings: [error instanceof Error ? error.message : "Furniture placement failed."] });
-      }
+    try {
+      const out = furnishDrawnApartment(uniqueRooms, {
+        flipY,
+        aptType: config.aptTypeOverride,
+        flexibleKitchen: config.flexibleKitchen,
+        selections,
+        ...(customised ? { pipeline: buildPipelineOptions(config, aptType) } : {}),
+      });
+      setFurnishedRooms(out.furnished);
+      setApartmentScoreInfo({ score: out.score, complete: out.complete });
+    } catch (error) {
+      setFurnishedRooms([]);
+      setApartmentScoreInfo(null);
+      throw error;
     }
-    setFurnishedRooms(results);
     setHasFurnishedOnce(true);
   }
 
@@ -3253,7 +3298,12 @@ export default function App() {
 
     const deduped = dedupeRooms(rooms);
     if (rooms.length !== deduped.length) setRooms(deduped);
-    doFurnish(deduped, pipelineConfig);
+    setRoomSelections({});
+    try {
+      doFurnish(deduped, pipelineConfig, {});
+    } catch (error) {
+      setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
+    }
     // Prime the guard so the auto-furnish effect doesn't immediately re-run for
     // the layout we just furnished.
     lastFurnishedSignatureRef.current = computeLayoutSignature(deduped, pipelineConfig);
@@ -3284,27 +3334,12 @@ export default function App() {
   function handleVariantChange(roomId: string, stepIndex: number, newOptionIndex: number) {
     const roomResult = furnishedRooms.find((r) => r.roomId === roomId);
     if (!roomResult) return;
-
-    const currentIndices = roomResult.steps.map((s) => Math.max(0, s.selectedIndex));
-    const newIndices = [...currentIndices];
-    newIndices[stepIndex] = newOptionIndex;
-    for (let i = stepIndex + 1; i < newIndices.length; i++) newIndices[i] = 0;
-
-    const aptType = pipelineConfig.aptTypeOverride ?? inferApartmentType(rooms);
-    const engineRoomEntry = toEngineRooms(rooms).find((r) => r.roomId === roomId);
-    if (!engineRoomEntry) return;
-
+    // sorted indices (0 = best) of the steps before, the chosen one; later steps go back to their best
+    const sel = [...roomResult.steps.slice(0, stepIndex).map((s) => Math.max(0, s.selectedIndex)), Math.max(0, newOptionIndex)];
+    const next = { ...roomSelections, [roomId]: sel };
     try {
-      const result = runRoomPipelineAt(
-        engineRoomEntry.room, aptType, newIndices, buildPipelineOptions(pipelineConfig, aptType),
-      );
-      setFurnishedRooms((prev) =>
-        prev.map((r) =>
-          r.roomId === roomId
-            ? { ...r, steps: result.steps, warnings: Array.from(new Set(result.warnings)) }
-            : r,
-        ),
-      );
+      doFurnish(rooms, pipelineConfig, next);
+      setRoomSelections(next);
     } catch {
       // keep previous result on error
     }
@@ -3510,6 +3545,9 @@ export default function App() {
     // 3. Replace the drawing state (background images are left untouched).
     resetScaleCalibration();
     resetRoomDraft();
+    setEngineFlipY(false);
+    setFromArchive(null);
+    setRoomSelections({});
     setRooms(converted);
     setDatasetContext(contextAreas);
     setDatasetWalls(gappedWalls);
@@ -3551,7 +3589,7 @@ export default function App() {
     // 5. Auto-furnish with the freshly converted rooms (avoids stale closures).
     //    A furnishing failure must not break the load itself.
     try {
-      doFurnish(converted, nextConfig);
+      doFurnish(converted, nextConfig, {}, false);
       lastFurnishedSignatureRef.current = computeLayoutSignature(converted, nextConfig);
     } catch (error) {
       setFurnishedRooms([]);
@@ -3598,6 +3636,10 @@ export default function App() {
     resetScaleCalibration();
     resetRoomDraft();
     setRooms([]);
+    setEngineFlipY(false);
+    setFromArchive(null);
+    setRoomSelections({});
+    setApartmentScoreInfo(null);
     setDatasetContext([]);
     setDatasetWalls([]);   // shell walls are generated from the Walls settings
     setDatasetEntrances(entrances);
@@ -3634,6 +3676,77 @@ export default function App() {
     });
   }
 
+  /** Replace the drawing by a list of rooms (template JSON with rooms, or a composer archive layout) and furnish it.
+   *  `flipY`: the rooms are given y-up and are drawn with y negated (exact), the engine gets the original y. */
+  function loadRoomsIntoTrace(
+    input: { rooms: { type: RoomToolId; points: Point2D[]; doors: Point2D[]; doorOrder?: number[]; windows: Point2D[]; windowWidths?: number[]; subtype?: string | null; open?: boolean | null }[] },
+    flipY: boolean,
+    config: PipelineConfig,
+    archive: { id: string; plId: string; aptType: string } | null,
+  ) {
+    const f = (p: Point2D): Point2D => (flipY ? { x: p.x, y: -p.y } : p);
+    const seq = ++datasetLoadSeq.current;
+    const converted: DrawnRoom[] = input.rooms.map((r, i) => ({
+      id: `tpl-${seq}-${i}`,
+      type: r.type,
+      points: r.points.map(f),
+      color: ROOM_TOOLS.find((t) => t.id === r.type)?.color ?? "#999",
+      doors: r.doors.map(f),
+      windows: r.windows.map(f),
+      ...(r.doorOrder && r.doorOrder.length ? { doorOrder: r.doorOrder } : {}),
+      ...(r.windowWidths && r.windowWidths.length === r.windows.length ? { windowWidths: r.windowWidths } : {}),
+      ...(r.subtype ? { subtype: r.subtype } : {}),
+      ...(r.open === true || r.open === false ? { open: r.open } : {}),
+    }));
+    if (!converted.length) return;
+    resetScaleCalibration();
+    resetRoomDraft();
+    setEngineFlipY(flipY);
+    setFromArchive(archive);
+    setRoomSelections({});
+    setRooms(converted);
+    setDatasetContext([]);
+    setDatasetWalls([]);
+    setDatasetEntrances([]);
+    setApartmentShell(null);
+    setFurnishedRooms([]);
+    setSelectedRoomId(null);
+    setSelectedFurnitureKey(null);
+    setFurnishError(null);
+    setPipelineConfig(config);
+    setSelectedTool("furnish");
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const r of converted) for (const p of r.points) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    }
+    setTransform({ metresAcross: Math.min(90, Math.max(8, Math.max(x1 - x0, y1 - y0) * 1.25)), centerX: (x0 + x1) / 2, centerY: (y0 + y1) / 2 });
+    try {
+      doFurnish(converted, config, {}, flipY);
+      lastFurnishedSignatureRef.current = computeLayoutSignature(converted, config);
+    } catch (error) {
+      setFurnishedRooms([]);
+      setFurnishError(error instanceof Error ? error.message : "Furniture placement failed.");
+    }
+  }
+
+  function handleLoadTemplateRooms(tpl: TemplateRooms) {
+    loadRoomsIntoTrace(tpl, tpl.yUp, { ...pipelineConfig, roomOverrides: {} }, null);
+  }
+
+  /** Open a composer archive layout in Trace & Furnish: its request's rooms (zero-thickness cell polygons, metres),
+   *  door points, windows and subtypes, the corridor(s) of its drawing, CLI options (closed kitchens on presets,
+   *  the request's apartment type). Unedited, the furnish equals the archive tab's. */
+  function openArchiveInTrace(layout: ArchiveLayout) {
+    const all = archiveLayoutRooms(layout as unknown as Parameters<typeof archiveLayoutRooms>[0]);
+    setViewMode("trace");
+    loadRoomsIntoTrace(
+      { rooms: all },
+      true,
+      { aptTypeOverride: layout.request.aptType ?? null, roomOverrides: {}, flexibleKitchen: layout.request.flexibleKitchen === true },
+      { id: layout.id, plId: layout.pl_id, aptType: layout.aptType },
+    );
+  }
+
   function handleJsonUploadClick() {
     jsonInputRef.current?.click();
   }
@@ -3645,7 +3758,10 @@ export default function App() {
     const reader = new FileReader();
     reader.addEventListener("load", () => {
       try {
-        handleLoadApartmentShell(String(reader.result));
+        const text = String(reader.result);
+        const tpl = parseTemplateRooms(text);
+        if (tpl) handleLoadTemplateRooms(tpl);
+        else handleLoadApartmentShell(text);
       } catch (error) {
         setFurnishError(error instanceof Error ? error.message : "Apartment JSON: could not read the file.");
       }
@@ -3841,6 +3957,13 @@ export default function App() {
           >
             Explore dataset
           </button>
+          <button
+            type="button"
+            className={`view-tab-btn${viewMode === "archive" ? " active" : ""}`}
+            onClick={() => setViewMode("archive")}
+          >
+            Composer archive
+          </button>
         </div>
         {/* Both panels stay mounted and are hidden with the `hidden` attribute
             rather than unmounted, so switching tabs keeps the Explore tab's
@@ -3884,11 +4007,25 @@ export default function App() {
           affords={affords}
           onLoadApartment={handleLoadDatasetApartment}
         />
+        <ArchiveTab
+          hidden={viewMode !== "archive"}
+          state={archive}
+          onOpenInTrace={openArchiveInTrace}
+          show={archiveShow}
+          onShow={(patch) => setArchiveShow((v) => ({ ...v, ...patch }))}
+        />
       </div>
+
+      {viewMode === "archive" && (
+        <section className="viewer-surface" aria-label="Composer archive plan">
+          <ArchiveCanvas state={archive} show={archiveShow} />
+        </section>
+      )}
 
       <section
         ref={viewerRef}
         className="viewer-surface"
+        hidden={viewMode === "archive"}
         aria-label="Layout viewer"
         onClick={deselectAllImages}
       >
@@ -3906,6 +4043,7 @@ export default function App() {
           datasetContext={datasetContext}
           datasetWalls={datasetWalls}
           generatedWalls={generatedWalls}
+          passagePoints={openings.passages}
           datasetEntrances={datasetEntrances}
           apartmentShell={apartmentShell}
           showWalls={showWalls}
@@ -3931,6 +4069,50 @@ export default function App() {
           onCandidateDrop={handleCandidateDrop}
           isFixedPiece={isFixedPiece}
         />
+
+        {fromArchive || apartmentScoreInfo ? (
+          <div className="apt-banner" onClick={(e) => e.stopPropagation()}>
+            {fromArchive ? (
+              <span>
+                composer archive <b className="mono">{fromArchive.aptType} · pl {fromArchive.id}</b>
+              </span>
+            ) : null}
+            {apartmentScoreInfo && isFurnished ? (
+              <span>
+                apartment <b className="mono">{apartmentScoreInfo.score.toFixed(2)}</b>
+                {apartmentScoreInfo.complete ? "" : " (incomplete)"}
+              </span>
+            ) : null}
+            {fromArchive ? (
+              <button type="button" className="apt-banner-btn" onClick={() => setViewMode("archive")}>
+                ← Back to archive
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {(() => {
+          const k = selectedRoomId ? rooms.find((r) => r.id === selectedRoomId) : null;
+          if (!k || k.type !== "Kitchen") return null;
+          const kind = k.open === true || k.subtype === "Open kitchen" ? "open" : k.open === false || k.subtype === "Kitchen" ? "closed" : "auto";
+          const setKind = (v: "auto" | "open" | "closed") =>
+            setRooms((cur) => cur.map((r) => (r.id !== k.id ? r : {
+              ...r,
+              open: null,
+              subtype: v === "open" ? "Open kitchen" : v === "closed" ? "Kitchen" : null,
+            })));
+          return (
+            <div className="kitchen-kind" onClick={(e) => e.stopPropagation()}>
+              <span>Kitchen</span>
+              {(["auto", "open", "closed"] as const).map((v) => (
+                <button key={v} type="button" className={`nf-size-btn${kind === v ? " active" : ""}`} onClick={() => setKind(v)}
+                  title={v === "auto" ? "decided by geometry (touching a living room ≥ 0.6 m within 1 cm)" : v === "open" ? 'subtype "Open kitchen"' : 'subtype "Kitchen"'}>
+                  {v === "auto" ? "by geometry" : v}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
 
         {isFurnished ? (
           <div className="canvas-status-badge">

@@ -58,3 +58,9 @@ neufert swiss dataset/
 #   chunk*.log           — batch runner logs
 neufert-benchmark/out/results_chunk*.jsonl
 neufert-benchmark/out/chunk*.log
+
+# Composer archive export for the app's archive browser (furnisher-app/tools/export_composer_archive.py) — generated, local only
+furnisher-app/public/archive/
+
+# Python bytecode
+__pycache__/
