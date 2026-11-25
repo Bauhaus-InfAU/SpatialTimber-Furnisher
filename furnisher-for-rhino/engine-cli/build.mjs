@@ -9,21 +9,26 @@
 
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** Resolve `./foo.md?raw` imports to the underlying file, loaded as a UTF-8 string. */
+/**
+ * Resolve `./foo.md?raw` imports to the underlying file, loaded as a UTF-8 string.
+ * The path is kept relative to this script (forward slashes): esbuild writes it
+ * into the bundle as a comment, so an absolute path would make the same commit
+ * built in two folders differ. onLoad resolves it against this script again.
+ */
 const rawMarkdownPlugin = {
   name: "raw-markdown",
   setup(b) {
     b.onResolve({ filter: /\.md\?raw$/ }, (args) => ({
-      path: resolve(args.resolveDir, args.path.replace(/\?raw$/, "")),
+      path: relative(here, resolve(args.resolveDir, args.path.replace(/\?raw$/, ""))).split("\\").join("/"),
       namespace: "raw-md",
     }));
     b.onLoad({ filter: /.*/, namespace: "raw-md" }, (args) => ({
-      contents: readFileSync(args.path, "utf8"),
+      contents: readFileSync(resolve(here, args.path), "utf8"),
       loader: "text",
     }));
   },
@@ -37,6 +42,8 @@ const bundles = [
 for (const { entry, outfile } of bundles) {
   await build({
     entryPoints: [resolve(here, entry)],
+    // Paths in the bundle's comments are relative to this folder, whatever the caller's working directory.
+    absWorkingDir: here,
     bundle: true,
     platform: "node",
     target: "node18",
