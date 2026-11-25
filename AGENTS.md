@@ -17,6 +17,17 @@ Orientation for a coding agent (and a person) opening this repository. Read this
 
 **All placement and scoring logic lives in the engine.** The app and the CLI call it and add no logic of their own: no own search, no own lookup of pieces, no own score. If the app and the CLI should behave differently, the difference is an option of the engine, not a copy of its code.
 
+## Where an apartment's furnishing is decided
+
+- `furnisher-engine/src/engine/apartment.ts`, `furnishApartment(request, opts)`: the entry point for a whole apartment, used by the CLI (`core.ts` only wraps it), the batch runner and the app (Trace & Furnish through `furnisher-app/src/apartmentFurnish.ts`, the Composer archive tab through its worker). It resolves room names, normalises polygons, gives each room the doors within 0.4 m, finds the open kitchens and their passages, furnishes every room with `furnishRoom`, then adds the open kitchens' worktop extension and bar, and finally gives the apartment summary (`apartmentSummaryOf`, which calls `summarizeApartment`). Request options: `flexibleKitchen`, `roomsInsideWalls`, `selections`; per room `subtype`, `open`, `area`.
+- Open kitchens (`openKitchen.ts`, `kitchenFlex.ts`, `kitchenBar.ts`):
+  - A kitchen is open when the caller says so (`open: true`), else when its `subtype` is "Open kitchen" (`"Kitchen"` keeps it closed), else when it touches a living room: parallel, overlapping edges closer than 1 cm (`OPEN_TOUCH_TOL`) over at least 0.6 m. The stretches without a wall become `Room.openSegments` on both rooms; a door point on them is a passage (no door swing).
+  - An open kitchen is built only from 0.6 m modules (`kitchenFlex.ts`): I, L or II (two facing strips, aisle at least 1.2 m), no module backing onto the opening, 0.9 m of the opening kept free. It aims at a worktop target of usable modules (`kitchenUsableTarget`: fridge, sink, hob and 3 worktop modules, at least the 4 / 6 / 6 / 8 modules of the apartment type).
+  - Worktop extension: when the kitchen falls short of its target inside its own walls, one leg may continue past the opening along a living-room wall (at most 2 modules, plain worktop). Its floor is reserved in the living room (`Room.reserved`), and the extension is kept only when the living room loses no piece, no score and stays furnished; otherwise the kitchen is redone without it.
+  - Bar: a short counter on the opening with stools on the living-room side; the stool zone is reserved in the living room, and the bar is dropped under the same rule.
+  - An open kitchen never falls back to a preset kitchen: `furnishRoom` gives a modular kitchen step neither the next alternative nor a fallback piece (`modularKitchen` in `furnish.ts`). No modular layout means no kitchen, honestly reported.
+- `roomsInsideWalls: true`: the room polygons were pulled inside their walls while door and window points stayed on the wall centre lines; each point at most 0.16 m off the room's outline is moved onto it. Default false (the Composer's rooms have no wall thickness).
+
 ## Where a room's furnishing is decided
 
 - `furnisher-engine/src/engine/furnish.ts`, `furnishRoom(room, aptType, opts)`: the regular pieces first; only for a room they leave incomplete, the same pieces at other positions, the step's other alternative, then the smaller fallback pieces. Also the room's score (`scoreFurnishedRoom`), "counts as furnished" (`roomFurnished`, `pieceOverlaps`) and the apartment summary (`summarizeApartment`).
@@ -53,7 +64,17 @@ npm run build        # FAILS: 9 type errors, all in demo/ (storybook components 
 ```
 
 - `npm test` furnishes 16 real rooms (`engine-cli/test/cases.json`) twice, the app's way through the engine and through the built CLI, and checks that both give the same pieces, option counts, geometry, fallback, score and "furnished", and what each case expects.
-- `npm run build` in `engine-cli` writes the absolute path of `placement_order.md` into the bundle as a comment, so the same commit built in two folders differs by that one line.
+- `npm run build` in `engine-cli` gives the same bytes for the same commit in any folder (`build.mjs` keeps the path of `placement_order.md` relative to itself). The engine's own `npm install` (in `furnisher-engine`) is needed for `polygon-clipping`.
+
+## The Composer archive tab
+
+The app's "Composer archive" tab (`furnisher-app/src/archive/`) browses Building Composer layouts, furnishes each with `furnishApartment` in a worker, draws the plan, compares with the score stored in the archive, and opens a layout in Trace & Furnish. The data is not in git (`furnisher-app/public/archive/`, ignored). Export it with the Composer's Python, from the Furnisher folder:
+
+```powershell
+C:\Work\SpatialTimber-Building_Composer\.venv\Scripts\python.exe furnisher-app/tools/export_composer_archive.py
+```
+
+It builds every request with the Composer's own code (`stc`), writes `index.json` and `chunk-NNN.json` to `furnisher-app/public/archive/composer/`, and takes `--open-only`, `--others N` (layouts without an open kitchen, default 300), `--limit N` and `--verify N`; the Composer folder comes from `STC_COMPOSER`. The header of the script says the rest. Checks: `node tools/run_check_archive_parity.mjs 150` (from `furnisher-app`) compares the app's engine with the built CLI on 150 layouts, byte for byte; its score part compares with the archive's stored scores, which come from an older engine. `--trace` checks that Trace & Furnish sends the archive's request.
 
 ## Read next
 

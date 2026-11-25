@@ -10,6 +10,10 @@ Pure placement logic: wall analysis, ray checks, transforms, boolean subtraction
 
 | Export | Description |
 |---|---|
+| `furnishApartment(request, opts?)` | Furnish a whole apartment (`apartment.ts`): room names, polygons, doors per room, open kitchens and passages, every room through `furnishRoom`, the worktop extension and the bar, the apartment summary. The CLI and the app call this |
+| `apartmentSummaryOf(rooms, roomAnswers)` | The apartment's score and "every room furnished" for a request's rooms (`summarizeApartment` with each room's `area` or polygon area) |
+| `detectOpenKitchens(rooms)`, `openKitchenHint`, `splitPassages` | Which kitchens are open and where (`openKitchen.ts`); door points on an opening are passages |
+| `planKitchenBars(kitchen, counter, livingRooms, gap)` | Bars that fit beside an open kitchen's counter, best first (`kitchenBar.ts`) |
 | `furnishRoom(room, aptType, opts?)` | Furnish a room the way the app and the CLI do: regular pieces at their ranked positions, then at other positions, then the step's other alternative, then the fallback pieces of `fallbacks.json` (`furnish.ts`) |
 | `scoreFurnishedRoom(roomName, result, fallback, aptType?, fallbacks?)` | The room's score less the fallback's and an optional piece's points, and whether it counts as furnished |
 | `summarizeApartment(rooms)` | Area-weighted apartment score (2 decimals) and whether every room counts as furnished |
@@ -44,6 +48,20 @@ It places kitchens in rooms the preset route gives up on (irregular outlines,
 narrow galleys) and falls back one module at a time — a 5-module kitchen beats no
 kitchen — before relaxing the transition-zone requirement as a last resort.
 Output is an ordinary `PlacementOption`, so nothing downstream needs a special case.
+
+---
+
+## Open kitchens
+
+`furnishApartment` decides once per apartment which kitchens are open (`openKitchen.ts`): the room's `open` flag, else its `subtype` ("Open kitchen" open, "Kitchen" closed), else geometry (kitchen and living room closer than 1 cm along parallel, overlapping edges, at least 0.6 m in total). The open stretches go on both rooms as `Room.openSegments`; the kitchen also gets `openKitchen: true` and `extendInto` (the living rooms across the opening).
+
+- The kitchen step of an open kitchen always uses the modular placer: I, L or II (two facing strips), no module backing onto an opening, 0.9 m of the opening free. Runs are ranked toward a worktop target (`kitchenUsableTarget`: 3 appliance modules plus 3 worktop modules, at least the module count of the apartment type).
+- Short of the target inside its own walls, one leg may run on past the opening along a living-room wall (`EXT_MAX`, 2 modules, no appliances). The placement carries `extension` (zones to reserve in the living room). `furnishApartment` keeps it only if the living room, furnished around it, loses no piece, no score and stays furnished.
+- The bar (`kitchenBar.ts`) stands in the kitchen on the opening; its stool zone is reserved in the living room (`Room.reserved`) under the same rule.
+- In the living room, wall-backed pieces do not back onto the opening and a freestanding table keeps 0.6 m off it.
+- No preset kitchen comes back: `furnishRoom` gives a modular kitchen step (open kitchen or `flexibleKitchen`) no other alternative and no fallback piece.
+
+With `roomsInsideWalls: true` in the request, door and window points up to 0.16 m off a room's outline are moved onto it (rooms drawn inside their walls, openings on the wall centre lines).
 
 ---
 
@@ -105,7 +123,7 @@ runRoomPipeline(room, aptType, { library: myLib, pipeline: myPipeline })
 
 Defaults to whatever `library/loader.ts` resolved at startup.
 
-Further options: `pieces` (fallback pieces that stand in for regular ones, as `furnishRoom` sets them), `polygonSimplified` (the caller has already simplified the polygon, as the CLI does), and for `furnishRoom` `fallbacks` (default `fallbacks.json` only when no custom library or pipeline is given) and `searchRuns` (bound of the search for other positions, default 300, 0 = off).
+Further options: `openSegments`, `openKitchen`, `reserved`, `extendInto` on the room (set by `furnishApartment`, see Open kitchens), `pieces` (fallback pieces that stand in for regular ones, as `furnishRoom` sets them), `polygonSimplified` (the caller has already simplified the polygon, as the CLI does), and for `furnishRoom` `fallbacks` (default `fallbacks.json` only when no custom library or pipeline is given) and `searchRuns` (bound of the search for other positions, default 300, 0 = off).
 
 ---
 
