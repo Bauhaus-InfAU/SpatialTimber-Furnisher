@@ -155,3 +155,66 @@ export function parseApartmentJson(text: string): ParsedApartment {
     wallThickness,
   };
 }
+
+// ─── Template JSON with rooms (the app's own "Download template" export) ─────────
+// Reloads the rooms the template export writes: { rooms: [{ id, type, roomType?, polygon, subtype?, open? }],
+// doors: [{ from, to, position }], entrances: [{ room, position }], windows: [{ room, position, width }],
+// yUp? }. `roomType` (the app's room type), `subtype` / `open` (open kitchens) and `yUp` (a composer layout,
+// written in its own y-up frame) are this app's additions; older templates without them still load (Children come
+// back as Bedroom then, their slug being "bedroom").
+
+import type { RoomToolId } from "./types";
+
+const SLUG_TO_TYPE: Record<string, RoomToolId> = {
+  bedroom: "Bedroom", living: "Living room", kitchen: "Kitchen", bathroom: "Bathroom", wc: "WC", hall: "Hall", corridor: "Corridor",
+};
+const ROOM_TYPES: RoomToolId[] = ["Bedroom", "Living room", "Kitchen", "Bathroom", "WC", "Children", "Hall", "Corridor"];
+
+export type TemplateRooms = {
+  yUp: boolean;
+  rooms: { type: RoomToolId; points: Point2D[]; doors: Point2D[]; windows: Point2D[]; windowWidths: number[]; subtype: string | null; open: boolean | null }[];
+};
+
+/** A template document with rooms, or null when the document has no `rooms` list (then it is an apartment shell). */
+export function parseTemplateRooms(text: string): TemplateRooms | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(doc) || !Array.isArray(doc.rooms) || !doc.rooms.length) return null;
+  const byId = new Map<string, TemplateRooms["rooms"][number]>();
+  const rooms: TemplateRooms["rooms"] = [];
+  for (const raw of doc.rooms) {
+    if (!isRecord(raw) || !Array.isArray(raw.polygon)) throw new Error("Template JSON: every room needs a polygon.");
+    const points = raw.polygon.map(readPoint).filter((p): p is Point2D => p !== null);
+    if (points.length < 3) throw new Error("Template JSON: a room polygon needs at least 3 points.");
+    const type: RoomToolId | undefined =
+      typeof raw.roomType === "string" && ROOM_TYPES.includes(raw.roomType as RoomToolId)
+        ? (raw.roomType as RoomToolId)
+        : SLUG_TO_TYPE[String(raw.type ?? "").toLowerCase()];
+    if (!type) throw new Error(`Template JSON: unknown room type "${String(raw.type)}".`);
+    const room = {
+      type, points, doors: [] as Point2D[], windows: [] as Point2D[], windowWidths: [] as number[],
+      subtype: typeof raw.subtype === "string" ? raw.subtype : null,
+      open: typeof raw.open === "boolean" ? raw.open : null,
+    };
+    rooms.push(room);
+    if (typeof raw.id === "string") byId.set(raw.id, room);
+  }
+  const place = (list: unknown, key: "from" | "room", into: "doors" | "windows") => {
+    for (const raw of asList(list)) {
+      if (!isRecord(raw)) continue;
+      const p = readPoint(raw.position ?? raw.midpoint ?? raw.point);
+      const room = byId.get(String(raw[key] ?? ""));
+      if (!p || !room) continue;
+      room[into].push(p);
+      if (into === "windows") room.windowWidths.push(typeof raw.width === "number" ? raw.width : DEFAULT_WINDOW_WIDTH);
+    }
+  };
+  place(doc.doors, "from", "doors");
+  place(doc.entrances, "room", "doors");
+  place(doc.windows, "room", "windows");
+  return { yUp: doc.yUp === true, rooms };
+}

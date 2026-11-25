@@ -66,6 +66,14 @@ export type DrawnRoom = {
   /** Per-window real widths (metres), aligned with `windows`. Absent for
    *  user-drawn rooms and older bundles → fall back to windowWidth(type). */
   windowWidths?: number[];
+  /** Caller's room subtype, passed to the engine as is (furnishApartment): on a kitchen "Open kitchen" makes it
+   *  open, "Kitchen" closed; anything else / absent → decided by geometry. Also "Studio" etc. from the composer. */
+  subtype?: string | null;
+  /** Explicit open-kitchen flag for a kitchen (beats subtype and geometry); null / absent = not set. */
+  open?: boolean | null;
+  /** Order of each door point in the apartment's door list (aligned with `doors`), kept from an imported
+   *  request so an unedited layout sends the very same request. Doors without one come after. */
+  doorOrder?: number[];
 };
 
 export type RoomDraft = {
