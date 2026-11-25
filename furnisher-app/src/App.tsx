@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, MouseEvent, PointerEvent } from "react";
-import { getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreRoom } from "@engine/index";
+import { getAllPlacements, placeVariantAtCorner, getDoorRectangles, subtractPolygon, subtractPolygonAll, scoreFurnishedRoom } from "@engine/index";
 import type { PlacedFurniture, StepOptions, PlacementOption, PlacementOptions } from "@engine/types";
-import type { PipelineOptions } from "@engine/index";
+import type { FurnishOptions } from "@engine/index";
 import type { Room as EngineRoom, RoomName } from "@layout/types";
-import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline } from "@library";
-import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
+import type { FurnitureLibrary, FurnitureEntry, FurnitureVariant, FurnitureCategory, Pipeline, FallbackSet, FallbackPiece } from "@library";
+import { defaultLibrary, defaultPipeline, defaultFallbacks, findFurnitureByName, resolveStep, resolvePipelineStep } from "@library";
 import { AppHeader } from "./AppHeader";
 import { ROOM_TOOLS, isRoomTool, isCirculationRoom, DEFAULT_WALL_SETTINGS } from "./types";
 import type {
@@ -1189,11 +1189,35 @@ function buildCustomEntry(
 }
 
 /** Everything the engine pipeline needs for one run, derived from the app config. */
-function buildPipelineOptions(config: PipelineConfig, aptType: number): PipelineOptions {
+function buildPipelineOptions(config: PipelineConfig, aptType: number): FurnishOptions {
   return {
     pipeline: buildCustomPipeline(config),
     library: buildCustomLibrary(config, aptType),
     flexibleKitchen: config.flexibleKitchen,
+    fallbacks: buildFallbacks(config),
+  };
+}
+
+/** True when the user changed this room's pipeline in the sidebar (steps, variants, sizes or custom pieces). */
+function isSectionCustomized(config: PipelineConfig, section: string): boolean {
+  const steps = config.roomOverrides[section];
+  if (!steps) return false;
+  const dflt = defaultPipeline[section] ?? [];
+  return steps.length !== dflt.length || steps.some((s, i) =>
+    JSON.stringify(s.names) !== JSON.stringify(dflt[i]) || s.variantIndex !== 0 || !!s.custom || !!s.sizeOverride);
+}
+
+/**
+ * The fallback pieces of default/fallbacks.json (smaller pieces for a room the
+ * regular ones leave incomplete) for the rooms whose pipeline the user kept as
+ * it is; a customised room is furnished exactly as the user set it up. The
+ * flexible kitchen builds its own counter, so the kitchen rules don't apply.
+ */
+function buildFallbacks(config: PipelineConfig): FallbackSet {
+  return {
+    ...defaultFallbacks,
+    rules: defaultFallbacks.rules.filter((r) =>
+      !isSectionCustomized(config, r.room) && !(config.flexibleKitchen && r.room === "Kitchen")),
   };
 }
 
@@ -1205,7 +1229,7 @@ function buildCustomLibrary(config: PipelineConfig, aptType: number): FurnitureL
       if (step.custom) {
         extra.push(buildCustomEntry(step.custom, aptType, category));
       } else if ((step.variantIndex > 0 || step.sizeOverride) && step.names[0]) {
-        const base = findFurnitureByName(defaultLibrary, aptType, category, step.names[0]);
+        const base = resolveStep(defaultLibrary, aptType, category, step.names)?.entry ?? null;
         if (base) {
           let entry: FurnitureEntry = step.variantIndex > 0 ? libraryEntryWithVariant(base, step.variantIndex) : base;
           if (step.sizeOverride) entry = scaleLibraryEntry(entry, step.sizeOverride);
@@ -2760,7 +2784,9 @@ function VariantControlPanel({
   onStepChange: (stepIndex: number, newIndex: number) => void;
 }) {
   if (roomResult.steps.length === 0) return null;
-  const { score } = scoreRoom(roomResult.roomName, { steps: roomResult.steps, warnings: roomResult.warnings });
+  const fallback = roomResult.fallback ?? null;
+  const { score, missingOptional } = scoreFurnishedRoom(
+    roomResult.roomName, { steps: roomResult.steps, warnings: roomResult.warnings }, fallback, roomResult.aptType, roomResult.fallbacks);
   const scoreColor = score >= 80 ? "var(--st-olive)" : score >= 50 ? "var(--accent)" : "var(--accent-deep)";
   return (
     <div className="variant-panel" onClick={(e) => e.stopPropagation()}>
@@ -2768,6 +2794,16 @@ function VariantControlPanel({
         <span>{roomResult.roomName}</span>
         <span className="variant-score" style={{ color: scoreColor }}>{score.toFixed(0)}</span>
       </div>
+      {fallback && (
+        <div className="variant-panel-note">
+          {fallback.label}{fallback.penaltyPoints ? ` · ${fallback.penaltyPoints} points off` : ""}
+        </div>
+      )}
+      {missingOptional && (
+        <div className="variant-panel-note">
+          {missingOptional.pieces.map((p) => p.label).join(", ")} · {missingOptional.penaltyPoints} points off
+        </div>
+      )}
       {roomResult.steps.map((step, i) => (
         <VariantStepRow key={i} step={step} onChange={(idx) => onStepChange(i, idx)} />
       ))}
@@ -3366,7 +3402,8 @@ export default function App() {
     const category = roomNameToFurnitureCategory(rr.roomName as RoomName);
     const section = rr.roomName.startsWith("Children") ? "Children" : rr.roomName;
 
-    const entry = findFurnitureByName(customLibrary, aptType, category, step.furnitureName);
+    const pieces: FallbackPiece[] | undefined = rr.fallback?.pieces;
+    const entry = resolvePipelineStep(customLibrary, aptType, category, customPipeline[section]?.[stepIdx] ?? [step.furnitureName], pieces)?.entry;
     if (!entry?.pieces[0]) return;
     const variant = entry.pieces[0].variants[step.selected.variantIndex];
     if (!variant) return;
@@ -3413,12 +3450,9 @@ export default function App() {
 
     for (let i = stepIdx + 1; i < pipelineSteps.length; i++) {
       const alternatives = pipelineSteps[i];
-      let entry2 = null;
-      let resolvedName = "";
-      for (const name of alternatives) {
-        entry2 = findFurnitureByName(customLibrary, aptType, category, name);
-        if (entry2) { resolvedName = name; break; }
-      }
+      const resolved = resolvePipelineStep(customLibrary, aptType, category, alternatives, pieces);
+      const entry2 = resolved ? resolved.entry : null;
+      const resolvedName = resolved ? resolved.name : "";
       if (!entry2) {
         newWarnings.push(`No library entry for [${alternatives.join(" | ")}] — skipped`);
         newSteps.push({ furnitureName: alternatives.join(" | "), allOptions: [], selectedIndex: -1, selected: null });

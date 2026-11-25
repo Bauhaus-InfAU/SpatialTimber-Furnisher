@@ -12,6 +12,9 @@ Defines the order in which furniture is placed per room type.
   (e.g. `Bathtube | Shower`). The pipeline picks whichever name the library has for the current apartment type, in left-to-right order.
 - The pipeline validates all names against the library before running. Missing names log a warning and the step is skipped — they do not crash the run.
 - To reorder: change the numbering. To add a piece: insert a new numbered line. No code changes needed.
+- Smaller fallback pieces, and steps a room may do without, are listed in `fallbacks.json` next to this file.
+  Today: the dining table (`Dining`) of the living room in a 1-room apartment; when it finds no place, the room is
+  scored on its other pieces less `optionalPenaltyPoints` (10) and counts as furnished.
 
 ---
 

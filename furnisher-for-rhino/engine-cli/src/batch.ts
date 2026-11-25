@@ -14,13 +14,14 @@ console.info = () => {};
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { processRequest } from "./core";
+import { processRequest, apartmentOf } from "./core";
 import type { RoomInput } from "./core";
 
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
-// `subtype` / `open` (open-kitchen detection) travel inside RoomInput.
-type BatchRoomInput = RoomInput & { area?: number };
+// `subtype` / `open` (open-kitchen detection) and `area` (the weight in the
+// apartment score) travel inside RoomInput.
+type BatchRoomInput = RoomInput;
 
 interface BatchRequest {
   id: string;
@@ -229,16 +230,21 @@ async function main() {
           subtype: inRoom?.subtype,
           area: inRoom?.area,
           score: room.score,
+          furnished: room.furnished,
           warnings: room.warnings,
           ...(room.error ? { error: room.error } : {}),
           ...(recovered ? { recovered } : {}),
           ...(room.openKitchen ? { openKitchen: true } : {}),
+          ...(room.fallback ? { fallback: room.fallback } : {}),
+          ...(room.missingOptional ? { missingOptional: room.missingOptional } : {}),
+          ...(room.overlaps ? { overlaps: room.overlaps } : {}),
           stepScores: room.stepScores,
           steps: room.steps.map(s => ({
             furnitureName: s.furnitureName,
             optionCount: s.optionCount,
             selectedVariant: s.selectedVariant,
             selectedPosition: s.selectedPosition,
+            ...(s.replaces ? { replaces: s.replaces } : {}),
             ...(geometry
               ? { geometry: s.geometry, bbox: s.bbox, smallBbox: s.smallBbox }
               : {}),
@@ -250,7 +256,9 @@ async function main() {
         };
       });
 
-      writeRow({ id, apartment_id, aptType: res0.aptType, elapsedMs, rooms });
+      // After the retries: the apartment's score and whether every room counts as furnished.
+      const apartment = apartmentOf(req.rooms, merged.map(m => m.room));
+      writeRow({ id, apartment_id, aptType: res0.aptType, elapsedMs, apartment, rooms });
     } catch (err: any) {
       const elapsedMs = Date.now() - t0;
       elapsedTimes.push(elapsedMs);

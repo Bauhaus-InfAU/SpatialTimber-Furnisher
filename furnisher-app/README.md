@@ -62,7 +62,7 @@ The entire application lives in one component (~1 200 lines). Responsibilities:
 - **Room drawing** — click vertices to build a polygon; Shift+click constrains the new segment to horizontal/vertical; click near the first point to close. Rooms are stored as `DrawnRoom[]` with a type (e.g. `"Bedroom"`), vertex array, color, and optional door position.
 - **Edge editing** — click a room to select it, then drag the midpoint handle on any edge to reshape it.
 - **Door placement** — click within 0.75 m of a room wall to place a door on that edge.
-- **Furnishing** — converts `DrawnRoom[]` to engine `Room[]`, infers apartment type from the bedroom count, calls `runRoomPipeline()` per room, and renders the returned furniture steps on the canvas.
+- **Furnishing** — converts `DrawnRoom[]` to engine `Room[]`, infers apartment type from the bedroom count, calls the engine's `furnishRoom()` per room (the same function the CLI uses: search, fallback pieces), and renders the returned furniture steps on the canvas. The room keeps its `fallback`, so variant scrolling and manual drops keep the fallback piece. Rooms whose pipeline is customised in the sidebar get no fallback pieces.
 
 Exported geometry utilities: `distance`, `nearestPointOnSegment`, `pointInPolygon`, `polygonCentroid`, `constrainToOrthogonal`.
 
@@ -70,7 +70,7 @@ SVG sub-components rendered inline: `EdgeLabels`, `RoomLabel`, `EdgeEditor`, `Sc
 
 ### `Sidebar.tsx`
 
-Fixed 340 px left panel. Shows room count, total area in m², and a collapsible pipeline step for each stage. The **Furnish apartment** button sits at the bottom and is wired to the furnish callback from `App`.
+Fixed 340 px left panel. Shows room count, total area in m², and a collapsible pipeline step for each stage. The **Furnish apartment** button sits at the bottom and is wired to the furnish callback from `App`. After furnishing, its note shows the apartment score and whether every room is furnished (the engine's `summarizeApartment`); the pipeline editor shows the piece a step uses for the apartment type.
 
 ### `types.ts`
 
@@ -107,11 +107,12 @@ App draws rooms
   └─> normalizePolygonForEngine()   ensure CCW winding order
   └─> toEngineRooms()               DrawnRoom[] → engine Room[]
   └─> inferApartmentType()          count bedrooms → "1BR" | "2BR" | …
-  └─> runRoomPipeline(room, type)   returns { steps[], warnings[] }
+  └─> furnishRoom(room, type, opts) engine: search, fallback pieces (furnish.ts)
+  └─> runRoomPipelineAt(...)        the chosen layout, options in generation order
         └─> FurniturePreview        renders each step on canvas
 ```
 
-Placed furniture is drawn as SVG outlines. Warnings appear in a messages panel at the bottom-left of the canvas.
+Placed furniture is drawn as SVG outlines. Warnings appear in a messages panel at the bottom-left of the canvas. Selecting a furnished room opens its panel with the room score (`scoreFurnishedRoom`) and, where it applies, the fallback piece or the missing optional piece and the points off.
 
 ## Development
 

@@ -12,7 +12,7 @@ import { furnishApartment } from "@engine/apartment";
 import { detectOpenKitchens, openKitchenHint, splitPassages } from "@engine/openKitchen";
 import type { ApartmentRequest, ApartmentResult, RoomInput } from "@engine/apartment";
 import type { PlacedFurniture, PlacementOption, StepOptions } from "@engine/types";
-import type { PipelineOptions } from "@engine/index";
+import type { FurnishOptions } from "@engine/index";
 import type { DrawnRoom, FurnishedRoomResult, Point2D } from "./types";
 import { isCirculationRoom } from "./types";
 
@@ -115,19 +115,10 @@ export function kitchenOpenings(rooms: DrawnRoom[]): { segments: [Point2D, Point
   return out;
 }
 
-/** The composer's apartment score of a result (area-weighted, E10 furnish.score_row / furn2.report_of). */
-export function apartmentScore(run: ApartmentRun, result: ApartmentResult): { score: number; complete: boolean } {
-  let w = 0;
-  let a = 0;
-  let complete = true;
-  run.request.rooms.forEach((r, i) => {
-    const rm = result.rooms[i];
-    if (!rm) return;
-    w += (rm.score ?? 0) * r.area;
-    a += r.area;
-    complete = complete && !rm.error && rm.steps.length > 0 && rm.steps.every((st) => st.optionCount >= 1);
-  });
-  return { score: a ? Math.round((w / a) * 100) / 100 : 0, complete };
+/** The apartment's score of a result, as the engine gives it (summarizeApartment: area-weighted, the Composer's rule);
+ *  `complete`: every room counts as furnished. */
+export function apartmentScore(_run: ApartmentRun, result: ApartmentResult): { score: number; complete: boolean } {
+  return { score: result.apartment.score, complete: result.apartment.furnished };
 }
 
 const flipPts = (list: readonly P[]): P[] => list.map(([x, y]) => [x, -y]);
@@ -155,12 +146,15 @@ export function furnishDrawnApartment(
     aptType: number | null;
     flexibleKitchen: boolean;
     selections?: Record<string, number[]>;
-    /** the app's customised library / placement order; omitted when nothing is customised (= the CLI's) */
-    pipeline?: Pick<PipelineOptions, "library" | "pipeline">;
+    /** the app's customised library / placement order / fallback set; omitted when nothing is customised (= the CLI's) */
+    pipeline?: Pick<FurnishOptions, "library" | "pipeline" | "fallbacks">;
   },
 ): { run: ApartmentRun; result: ApartmentResult; furnished: FurnishedRoomResult[]; score: number; complete: boolean } {
   const run = buildApartmentRequest(rooms, opts);
-  const result = furnishApartment(run.request, { detail: true, ...(opts.pipeline ?? {}) });
+  const custom = opts.pipeline
+    ? { library: opts.pipeline.library, pipeline: opts.pipeline.pipeline, ...(opts.pipeline.fallbacks !== undefined ? { fallbacks: opts.pipeline.fallbacks } : {}) }
+    : {};
+  const result = furnishApartment(run.request, { detail: true, ...custom });
   const furnished: FurnishedRoomResult[] = result.rooms.map((rm, i) => {
     const det = result.detail?.rooms[i] ?? null;
     const warnings = [...new Set([...(rm.error ? [rm.error] : []), ...rm.warnings])];
@@ -174,7 +168,10 @@ export function furnishDrawnApartment(
     if (opts.flipY) {
       steps = steps.map((st) => ({ ...st, allOptions: st.allOptions.map(flipOption), selected: st.selected ? flipOption(st.selected) : null }));
     }
-    return { roomId: run.roomIds[i], roomName: rm.name as FurnishedRoomResult["roomName"], steps, warnings };
+    return {
+      roomId: run.roomIds[i], roomName: rm.name as FurnishedRoomResult["roomName"], steps, warnings,
+      fallback: det.fallback, aptType: result.aptType, fallbacks: det.fallbacks,
+    };
   });
   return { run, result, furnished, ...apartmentScore(run, result) };
 }

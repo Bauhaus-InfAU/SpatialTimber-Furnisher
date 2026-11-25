@@ -10,28 +10,34 @@
 //   - open kitchens detected once for the apartment (explicit flag / subtype /
 //     name / geometry, see openKitchen.ts) and their openings expressed on the
 //     normalised polygons; door points on an opening become passages (no swing);
-//   - every room furnished with the strict pipeline, options sorted by room
-//     score, the caller's selections replayed with downstream re-runs;
+//   - every room furnished by furnishRoom (furnish.ts): the regular pieces,
+//     then other positions, the other alternative and the fallback pieces of
+//     fallbacks.json (never for a modular kitchen step); scored by
+//     scoreFurnishedRoom (penalty points, optional steps, overlaps); the
+//     caller's selections replayed with downstream re-runs;
 //   - kitchens first; an open kitchen's counter may continue past the opening
 //     as plain worktop (kitchenFlex.ts), its floor reserved in the living room
 //     (kept only if the living room loses nothing, else the kitchen is redone
 //     without it); then the optional bar with stools reserved in the living
 //     room across the opening (same rule);
-//   - per-room error isolation: a failing room comes back with score null.
-// All geometry is in metres. Moved here unchanged from the CLI's core.ts.
+//   - per-room error isolation: a failing room comes back with score null;
+//   - the apartment's score and "every room furnished" (summarizeApartment),
+//     after the bar and the extension.
+// All geometry is in metres. Moved here from the CLI's core.ts.
 //
 // NOTE: the engine emits many `[placer] ...` debug lines via console.log at
 // runtime. Callers whose stdout is a JSON channel should silence console.log.
 
 import { getDoorRectangles, doorWidth, simplifyPolygon as engineSimplify } from "./placer";
-import { runRoomPipelineSteps } from "./pipeline";
-import type { PipelineOptions } from "./pipeline";
+import { runRoomPipelineAt } from "./pipeline";
+import { furnishRoom, scoreFurnishedRoom, sortOptionsByScore, summarizeApartment, fallbacksFor } from "./furnish";
+import type { FurnishOptions, RoomFallback, ApartmentSummary } from "./furnish";
+import type { FallbackSet } from "../library/types";
 import { detectOpenKitchens, openKitchenHint, isOpenKitchenName, splitPassages } from "./openKitchen";
 import type { OpenKitchenResult } from "./openKitchen";
 import { planKitchenBars } from "./kitchenBar";
-import { scoreRoom } from "./scorer";
 import type { RoomName, Point2D, Room } from "../layout/types";
-import type { PlacementOption, StepOptions, PipelineWithOptions } from "./types";
+import type { PlacementOption, PipelineWithOptions } from "./types";
 
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
@@ -47,6 +53,8 @@ export interface RoomInput {
   subtype?: string | null;
   /** Explicit open-kitchen flag; beats subtype, name and geometry. */
   open?: boolean | null;
+  /** Floor area (m²), the room's weight in the apartment score; default: the polygon's area. */
+  area?: number;
 }
 
 export interface ApartmentRequest {
@@ -108,16 +116,38 @@ export interface StepOut {
   geometry: { closed: boolean; points: Point2D[] }[];
   bbox: Point2D[];
   smallBbox: Point2D[];
+  /** Only on a fallback piece: the regular piece it stands in for (e.g. "Bathtube"). */
+  replaces?: string;
+}
+
+/** Present only when the room could not be furnished completely with its regular pieces. */
+export interface FallbackOut {
+  /** Rule id from fallbacks.json, or "next-alternative" (e.g. the bathtub where the shower does not fit). */
+  id: string;
+  label: string;
+  /** Points taken off this room's score (fallbacks.json `penaltyPoints`; 0 for "next-alternative"). */
+  penaltyPoints: number;
+  /** The room's score before the reduction. */
+  scoreBeforePenalty: number;
+  pieces: { furnitureName: string; replaces: string }[];
 }
 
 export interface RoomOut {
   name: string;
   /** null when this room's computation failed (see `error`). */
   score: number | null;
+  /** The room counts as furnished: no error, every step has a valid placement (or only optional steps have none), no pieces overlap. */
+  furnished: boolean;
   stepScores: StepScoreOut[];
   steps: StepOut[];
   doors: DoorOut[];
   warnings: string[];
+  /** Present when the room needed a fallback (see FallbackOut). */
+  fallback?: FallbackOut;
+  /** Present when the room did without an optional step (fallbacks.json `optional`, e.g. no dining table in a 1-room apartment). */
+  missingOptional?: { pieces: { furnitureName: string; id: string; label: string }[]; penaltyPoints: number; scoreBeforePenalty: number };
+  /** Present when pieces of the room overlap (then the room does not count as furnished). */
+  overlaps?: { a: string; b: string; m2: number }[];
   /** Present when the engine threw for this room; other rooms are unaffected. */
   error?: string;
   /** Present (true) on a kitchen furnished as an open kitchen. */
@@ -300,87 +330,6 @@ function buildVariantGroups(allOptions: PlacementOption[]): VariantGroup[] {
   return groups;
 }
 
-// ─── Strict clearance pipeline ───────────────────────────────────────────────
-//
-// The engine's shared all-options runner (runRoomPipelineSteps) with the CLI's
-// settings: the strict clearance filter reports when it has to fall back, and
-// closed kitchens use the library presets unless the request asks for the
-// modular placer. Open kitchens (Room.openSegments) and the living-room
-// opening filter are handled inside the engine, so they hold in every re-run
-// that sortOptionsByScore and the selection replay make.
-
-function runStrictPipelineAt(
-  room: Room,
-  aptType: number,
-  selectedIndices: number[],
-  opts: PipelineOptions,
-): PipelineWithOptions {
-  return runRoomPipelineSteps(room, aptType, selectedIndices, opts);
-}
-
-// ─── Score-sort options ───────────────────────────────────────────────────────
-//
-// Greedy pass: for each step, score every option keeping previous steps at their
-// BEST GENERATION INDEX (not 0). Returns the best generation-order index per step,
-// which the caller uses to re-run the pipeline for correct geometry + downstream options.
-//
-// Also reorders each step's allOptions (in-place) so sorted index 0 = best room score.
-
-interface SortResult {
-  bestGenIndices: number[];
-  /** sortedToGen[step][sortedIdx] = generation-order index in the current run. */
-  sortedToGen: number[][];
-}
-
-function sortOptionsByScore(
-  room: Room,
-  aptType: number,
-  steps: StepOptions[],
-  opts: PipelineOptions,
-): SortResult {
-  const bestGenIdxPrev: number[] = [];
-  const bestGenIndices: number[] = [];
-  const sortedToGen: number[][] = [];
-
-  for (let si = 0; si < steps.length; si++) {
-    const step = steps[si];
-    if (step.allOptions.length <= 1) {
-      bestGenIdxPrev.push(0);
-      bestGenIndices.push(0);
-      sortedToGen.push([0]);
-      continue;
-    }
-
-    const scored: { origIdx: number; score: number }[] = [];
-    for (let oi = 0; oi < step.allOptions.length; oi++) {
-      const sels = [
-        ...bestGenIdxPrev,
-        oi,
-        ...new Array(steps.length - si - 1).fill(0),
-      ];
-      const r  = runStrictPipelineAt(room, aptType, sels, opts);
-      const rs = scoreRoom(room.name, r);
-      scored.push({ origIdx: oi, score: rs.score });
-    }
-    scored.sort((a, b) => b.score - a.score || a.origIdx - b.origIdx);
-
-    const bestGenIdx = scored[0].origIdx;
-    bestGenIdxPrev.push(bestGenIdx);
-    bestGenIndices.push(bestGenIdx);
-    // sortedToGen[si][k] = gen index of the k-th best option
-    sortedToGen.push(scored.map(s => s.origIdx));
-
-    const oldToNew = new Map(scored.map((s, ni) => [s.origIdx, ni]));
-    step.allOptions = scored.map(s => step.allOptions[s.origIdx]);
-    if (step.selectedIndex >= 0) {
-      step.selectedIndex = oldToNew.get(step.selectedIndex) ?? 0;
-    }
-    step.selected = step.allOptions[step.selectedIndex] ?? step.selected;
-  }
-
-  return { bestGenIndices, sortedToGen };
-}
-
 // ─── Door hinge selection ─────────────────────────────────────────────────────
 
 /**
@@ -401,21 +350,31 @@ export interface FurnishApartmentOptions {
   /** Overrides `request.flexibleKitchen` (closed kitchens on the modular placer). */
   flexibleKitchen?: boolean;
   /** Furniture library to use instead of the default one (the app's customised steps / sizes). */
-  library?: PipelineOptions["library"];
+  library?: FurnishOptions["library"];
   /** Placement order to use instead of the default one (the app's customised steps). */
-  pipeline?: PipelineOptions["pipeline"];
+  pipeline?: FurnishOptions["pipeline"];
+  /**
+   * Fallback pieces and optional steps (furnish.ts, FurnishOptions.fallbacks). Default:
+   * default/fallbacks.json when neither `library` nor `pipeline` is given, otherwise none.
+   */
+  fallbacks?: FallbackSet | null;
   /** Also return each room's engine room and full pipeline result (all options), as `detail`. */
   detail?: boolean;
 }
 
-/** Per request room: the engine room it was furnished as and the full pipeline result (null when it failed). */
+/**
+ * Per request room: the engine room it was furnished as, the full pipeline result,
+ * the fallback used and the options it was run with (null when it failed).
+ */
 export interface ApartmentDetail {
-  rooms: ({ room: Room; result: PipelineWithOptions } | null)[];
+  rooms: ({ room: Room; result: PipelineWithOptions; fallback: RoomFallback | null; options: FurnishOptions; fallbacks: FallbackSet | null } | null)[];
 }
 
 export interface ApartmentResult {
   aptType: number;
   rooms: RoomOut[];
+  /** The apartment's score (room scores weighted by area) and whether every room counts as furnished. */
+  apartment: ApartmentSummary;
   /** Only with `opts.detail`. */
   detail?: ApartmentDetail;
 }
@@ -476,11 +435,13 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     passages[i] = split.passages;
   });
 
-  const pipelineOpts: PipelineOptions = {
+  // normalizePolygon has already simplified every polygon (as the engine would).
+  const pipelineOpts: FurnishOptions = {
     flexibleKitchen: opts.flexibleKitchen ?? req.flexibleKitchen === true,
-    warnOnStrictFallback: true,
+    polygonSimplified: true,
     ...(opts.library ? { library: opts.library } : {}),
     ...(opts.pipeline ? { pipeline: opts.pipeline } : {}),
+    ...(opts.fallbacks !== undefined ? { fallbacks: opts.fallbacks } : {}),
   };
 
   // An open kitchen sees the living rooms across its opening (Room.extendInto)
@@ -504,7 +465,7 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     };
   };
 
-  type Computed = { out: RoomOut; result: PipelineWithOptions; room: Room };
+  type Computed = { out: RoomOut; result: PipelineWithOptions; room: Room; fallback: RoomFallback | null; options: FurnishOptions };
 
   const computeRoom = (er: (typeof engineRooms)[number], roomIdx: number, reserved?: Point2D[][], noExtend = false): Computed => {
     const open = openInfo[roomIdx];
@@ -513,16 +474,14 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     const rawSel = req.selections?.[roomIdx] ?? [];
     const hasUserSel = rawSel.some(v => v !== 0);
 
-    // ── Step 1: discover options ──────────────────────────────────────────────
-    let result = runStrictPipelineAt(room, aptType, [], pipelineOpts);
-
-    // ── Step 2: sort + capture gen-index maps ─────────────────────────────────
-    const { bestGenIndices } = sortOptionsByScore(room, aptType, result.steps, pipelineOpts);
-
-    // ── Step 3: re-run with best gen indices so downstream options are correct
-    result = runStrictPipelineAt(room, aptType, bestGenIndices, pipelineOpts);
-    const { bestGenIndices: bestGenIdx2, sortedToGen: maps2 } =
-      sortOptionsByScore(room, aptType, result.steps, pipelineOpts);
+    // ── Steps 1 to 3: the engine furnishes the room (furnish.ts): regular
+    //    pieces first; other positions, the next alternative and the fallback
+    //    pieces only for a room they leave incomplete.
+    const furnishedRoom = furnishRoom(room, aptType, pipelineOpts);
+    const ropts = furnishedRoom.options;
+    let result = furnishedRoom.result;
+    const bestGenIdx2 = furnishedRoom.bestGenIndices;
+    const maps2 = furnishedRoom.sortedToGen;
 
     // ── Step 4: apply user selections with proper re-runs ─────────────────────
     //
@@ -567,9 +526,9 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
           ...resolvedGenIdx.slice(0, i + 1),
           ...new Array(result.steps.length - i - 1).fill(0),
         ];
-        currentResult = runStrictPipelineAt(room, aptType, runSels, pipelineOpts);
+        currentResult = runRoomPipelineAt(room, aptType, runSels, ropts);
         const { bestGenIndices: newBest, sortedToGen: newMaps } =
-          sortOptionsByScore(room, aptType, currentResult.steps, pipelineOpts);
+          sortOptionsByScore(room, aptType, currentResult.steps, ropts);
         currentMaps = newMaps;
         // Update best gen indices for remaining steps.
         for (let j = i + 1; j < result.steps.length; j++) {
@@ -579,8 +538,20 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
       result = currentResult;
     }
 
-    // Score this room.
-    const roomScore = scoreRoom(er.name, result);
+    // Score this room; a fallback costs its reduction of points.
+    const { score, roomScore, furnished: roomIsFurnished, missingOptional, overlaps } =
+      scoreFurnishedRoom(er.name, result, furnishedRoom.fallback, aptType, fallbacksFor(ropts));
+    const fb = furnishedRoom.fallback;
+    const fallbackOut: FallbackOut | null = fb
+      ? {
+          id: fb.id,
+          label: fb.label,
+          penaltyPoints: fb.penaltyPoints,
+          pieces: fb.pieces.map(p => ({ furnitureName: p.furnitureName, replaces: p.replaces })),
+          scoreBeforePenalty: roomScore.score,
+        }
+      : null;
+    const replacedBy = new Map((fallbackOut?.pieces ?? []).map(p => [p.furnitureName, p.replaces]));
 
     const stepScores: StepScoreOut[] = roomScore.steps.map(s => ({
       furnitureName: s.furnitureName,
@@ -611,6 +582,7 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
         geometry: s.selected ? s.selected.placed.transformedGeometry : [],
         bbox: s.selected ? s.selected.placed.transformedBbox : [],
         smallBbox: s.selected ? s.selected.placed.transformedSmallBbox : [],
+        ...(replacedBy.has(s.furnitureName) ? { replaces: replacedBy.get(s.furnitureName) } : {}),
       };
     });
 
@@ -625,22 +597,27 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
 
     const out: RoomOut = {
       name: er.name,
-      score: roomScore.score,
+      score,
+      furnished: roomIsFurnished,
       stepScores,
       steps,
       doors,
       warnings: [...open.warnings, ...result.warnings],
+      ...(fallbackOut ? { fallback: fallbackOut } : {}),
+      ...(missingOptional ? { missingOptional } : {}),
+      ...(overlaps.length ? { overlaps } : {}),
       ...(open.openKitchen ? { openKitchen: true as const } : {}),
       ...(open.openSegments.length ? { openSegments: open.openSegments } : {}),
       ...(open.openRooms.length ? { openRooms: open.openRooms } : {}),
       ...(passages[roomIdx].length ? { passages: passages[roomIdx] } : {}),
     };
-    return { out, result, room };
+    return { out, result, room, fallback: furnishedRoom.fallback, options: ropts };
   };
 
   const failed = (er: (typeof engineRooms)[number], roomIdx: number, err: unknown): RoomOut => ({
     name: er.name,
     score: null,
+    furnished: false,
     stepScores: [],
     steps: [],
     doors: [],
@@ -679,7 +656,10 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
   //    extension is kept only if the living room ends up with no step lost and
   //    no less score than without it; otherwise the kitchen is redone without.
   type BarOutcome = { li: number; living: Computed; plan: ReturnType<typeof planKitchenBars>[number] };
+  // A step that had a place and has none now, or a room that counted as
+  // furnished and does not now (e.g. pieces overlapping).
   const lostAny = (from: Computed, to: Computed) =>
+    (from.out.furnished && !to.out.furnished) ||
     from.out.steps.some((s, i) => s.optionCount > 0 && (to.out.steps[i]?.optionCount ?? 0) === 0);
   const tryBar = (ki: number, kc: Computed, rooms: (Computed | null)[]): BarOutcome | null => {
     if (!openInfo[ki].openSegments.length) return null;
@@ -779,8 +759,30 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     }
   });
 
+  const apartment = apartmentSummaryOf(req.rooms, roomsOut);
   if (opts.detail) {
-    return { aptType, rooms: roomsOut, detail: { rooms: computed.map((c) => (c ? { room: c.room, result: c.result } : null)) } };
+    return {
+      aptType, rooms: roomsOut, apartment,
+      detail: {
+        rooms: computed.map((c) => (c
+          ? { room: c.room, result: c.result, fallback: c.fallback, options: c.options, fallbacks: fallbacksFor(c.options) }
+          : null)),
+      },
+    };
   }
-  return { aptType, rooms: roomsOut };
+  return { aptType, rooms: roomsOut, apartment };
+}
+
+/** The room's weight in the apartment score: its `area` when the request gives one, else its polygon's area. */
+export function roomArea(r: RoomInput): number {
+  return typeof r.area === "number" ? r.area : Math.abs(polygonSignedArea(r.polygon));
+}
+
+/**
+ * The apartment's score (area-weighted, every room of the request) and whether
+ * every room counts as furnished (summarizeApartment). The batch runner calls
+ * it again after its retries.
+ */
+export function apartmentSummaryOf(inputs: RoomInput[], rooms: Pick<RoomOut, "score" | "furnished">[]): ApartmentSummary {
+  return summarizeApartment(rooms.map((r, i) => ({ score: r.score, area: roomArea(inputs[i]), furnished: r.furnished })));
 }

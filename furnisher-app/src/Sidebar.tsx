@@ -2,9 +2,10 @@ import { useState, useEffect } from "react";
 import type { CSSProperties } from "react";
 import { ROOM_TOOLS, isCirculationRoom, WALL_OFFSET_OPTIONS } from "./types";
 import type { BackgroundImage, DrawnRoom, FurnishedRoomResult, RoomToolId, ToolId, PipelineConfig, PipelineStepConfig, CustomFurnitureDef, WallSettings, WallTypeSettings } from "./types";
-import { defaultLibrary, defaultPipeline, findFurnitureByName } from "@library";
+import { defaultLibrary, defaultPipeline, findFurnitureByName, resolveStep } from "@library";
 import type { FurnitureVariant, FurnitureCategory } from "@library";
 import { AffordToggles } from "./AffordToggles";
+import { scoreFurnishedRoom, summarizeApartment } from "@engine/index";
 
 type SidebarProps = {
   /** Kept mounted but out of view when the other tab is active — see App. */
@@ -365,6 +366,15 @@ function AddStepForm({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function polygonArea(points: { x: number; y: number }[]): number {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return area / 2;
+}
+
 function sectionToCategory(section: string): FurnitureCategory {
   if (section === "Living room") return "Livingroom";
   return section as FurnitureCategory;
@@ -442,7 +452,7 @@ function RoomSectionPanel({
   }
   function handleChangeVariant(idx: number, delta: number) {
     const step  = steps[idx];
-    const entry = findFurnitureByName(defaultLibrary, aptType, category, step.names[0]);
+    const entry = resolveStep(defaultLibrary, aptType, category, step.names)?.entry ?? null;
     const total = entry?.pieces[0]?.variants.length ?? 1;
     const newVI = ((step.variantIndex + delta) % total + total) % total;
     commit(steps.map((s, i) => i === idx ? { ...s, variantIndex: newVI } : s));
@@ -485,7 +495,9 @@ function RoomSectionPanel({
           )}
 
           {steps.map((step, idx) => {
-            const entry        = step.custom ? null : findFurnitureByName(defaultLibrary, aptType, category, step.names[0]);
+            // The piece this step uses for the apartment type (e.g. the Shower of "Bathtube | Shower" in a 1-room apartment).
+            const resolved     = step.custom ? null : resolveStep(defaultLibrary, aptType, category, step.names);
+            const entry        = resolved ? resolved.entry : null;
             const variantTotal = entry?.pieces[0]?.variants.length ?? 1;
             const rawVariant   = step.custom ? null : (entry?.pieces[0]?.variants[step.variantIndex] ?? entry?.pieces[0]?.variants[0] ?? null);
             const origDims     = rawVariant ? getVariantDimensions(rawVariant) : null;
@@ -502,7 +514,7 @@ function RoomSectionPanel({
               <div key={step.id}>
                 <div className="furniture-step-header">
                   <div className="furniture-step-info">
-                    <span className="furniture-step-name">{step.names[0]}</span>
+                    <span className="furniture-step-name">{resolved ? resolved.name : step.names[0]}</span>
                     {!step.custom && variantTotal > 1 && (
                       <span className="furniture-step-variant">
                         <button type="button" className="variant-arrow" onClick={() => handleChangeVariant(idx, -1)}>◀</button>
@@ -755,6 +767,13 @@ export function Sidebar({
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
 
   const isFurnished   = furnishedRooms.length > 0;
+  // The engine's apartment summary (as the CLI gives it): room scores weighted by area, every room furnished.
+  const apartment = isFurnished ? summarizeApartment(furnishedRooms.map((fr) => {
+    const result = { steps: fr.steps, warnings: fr.warnings };
+    const drawn  = rooms.find((r) => r.id === fr.roomId);
+    const scored = scoreFurnishedRoom(fr.roomName, result, fr.fallback ?? null, fr.aptType, fr.fallbacks);
+    return { score: scored.score, area: drawn ? Math.abs(polygonArea(drawn.points)) : 0, furnished: scored.furnished };
+  })) : null;
   const doorCount     = rooms.reduce((sum, r) => sum + r.doors.length, 0);
   const windowCount   = rooms.reduce((sum, r) => sum + r.windows.length, 0);
 
@@ -778,8 +797,8 @@ export function Sidebar({
   const furnishableCount = rooms.filter((r) => !isCirculationRoom(r.type)).length;
   const furnishNote = rooms.length === 0
     ? "Upload a floor plan and draw your rooms."
-    : isFurnished
-    ? "Explore and adjust the placement."
+    : isFurnished && apartment
+    ? `Apartment score ${apartment.score.toFixed(1)} · ${apartment.furnished ? "every room furnished" : "not every room furnished"}. Explore and adjust the placement.`
     : furnishableCount === 0
     ? "Halls and corridors are not furnished — draw at least one other room."
     : `${furnishableCount} room${furnishableCount > 1 ? "s" : ""} ready for furnishing.`;

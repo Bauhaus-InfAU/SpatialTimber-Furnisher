@@ -4,15 +4,15 @@
 // chain for a single room:
 //   place piece N → subtract footprint → feed roomRdc into piece N+1
 //
-// One step generator (generateStepOptions) serves every runner — the app's
-// runRoomPipeline / runRoomPipelineAt and the Rhino CLI (runRoomPipelineSteps)
-// — so a rule added there (flexible / open kitchens, the strict clearance
+// One step generator (generateStepOptions) serves every runner (runRoomPipeline,
+// runRoomPipelineAt, runRoomPipelineSteps; furnishRoom in furnish.ts and
+// furnishApartment in apartment.ts run the room through them), so a rule added there (flexible / open kitchens, the strict clearance
 // filter, the living-room opening filter) holds for every consumer.
 
 import type { Point2D, Room, RoomName } from "../layout/types";
-import type { FurnitureCategory, FurnitureLibrary, Pipeline } from "../library/types";
+import type { FallbackPiece, FurnitureCategory, FurnitureLibrary, Pipeline } from "../library/types";
 import { defaultLibrary, defaultPipeline } from "../library/loader";
-import { roomNameToCategory, findFurnitureByName } from "../library/lookup";
+import { roomNameToCategory, resolvePipelineStep } from "../library/lookup";
 import type { PlacementOption } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
 import { getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
@@ -37,11 +37,19 @@ export interface PipelineOptions {
    */
   flexibleKitchen?: boolean;
   /**
-   * Add a warning when the strict clearance filter rejects every option of a
-   * step and the unfiltered options are used instead (the Rhino CLI reports
-   * this; the app stays silent). Only read by runRoomPipelineSteps / ...At.
+   * Pieces that stand in for regular ones (a fallback of default/fallbacks.json,
+   * see furnish.ts). A step whose alternative is replaced uses the piece; every
+   * other step takes the first alternative the library has for this apartment
+   * type (resolveStep). Never read for a kitchen built from modules (open
+   * kitchens, flexibleKitchen): those never fall back to a preset block.
    */
-  warnOnStrictFallback?: boolean;
+  pieces?: FallbackPiece[];
+  /**
+   * The caller has already passed the polygon through simplifyPolygon (the CLI
+   * and furnishApartment do so once per room, also for the door output);
+   * simplifying it a second time can still move a vertex, so it is left as it is.
+   */
+  polygonSimplified?: boolean;
 }
 
 // ─── Freestanding furniture ───────────────────────────────────────────────────
@@ -175,12 +183,9 @@ function generateStepOptions(
     return { furnitureName: "Kitchen", options: [], warnings };
   }
 
-  let entry = null;
-  let resolvedName = "";
-  for (const name of alternatives) {
-    entry = findFurnitureByName(lib, aptType, category, name);
-    if (entry) { resolvedName = name; break; }
-  }
+  const resolved = resolvePipelineStep(lib, aptType, category, alternatives, opts?.pieces);
+  const entry = resolved ? resolved.entry : null;
+  const resolvedName = resolved ? resolved.name : "";
   if (!entry) {
     warnings.push(
       `No library entry for [${alternatives.join(" | ")}] in ${category} apt ${aptType} — skipped`,
@@ -221,9 +226,7 @@ function generateStepOptions(
     (opt) => !state.placedSmallBboxes.some((prev) => aabbOverlap(opt.placed.transformedBbox as Point2D[], prev)),
   );
   if (strictOptions.length > 0) return { furnitureName: resolvedName, options: strictOptions, warnings };
-  if (opts?.warnOnStrictFallback) {
-    warnings.push(`"${resolvedName}": all placements interfere with clearance zones — using best available`);
-  }
+  warnings.push(`"${resolvedName}": all placements interfere with clearance zones — using best available`);
   return { furnitureName: resolvedName, options: raw, warnings };
 }
 
@@ -240,7 +243,7 @@ export function runRoomPipeline(
   aptType: number,
   opts?: PipelineOptions,
 ): PipelineResult {
-  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
+  if (!opts?.polygonSimplified) room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   const pipeline = opts?.pipeline ?? defaultPipeline;
   const steps    = pipeline[roomNameToSection(room.name)] ?? [];
   const ctx      = makeContext(room, aptType, opts);
@@ -313,6 +316,6 @@ export function runRoomPipelineAt(
   selectedIndices: number[],
   opts?: PipelineOptions,
 ): PipelineWithOptions {
-  room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
+  if (!opts?.polygonSimplified) room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
   return runRoomPipelineSteps(room, aptType, selectedIndices, opts);
 }
