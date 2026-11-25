@@ -37,7 +37,8 @@
 
 import type { Point2D, Room } from "../layout/types";
 import type { PlacementOption, PlacementOptions } from "./types";
-import { pointInPolygon, insetInside, doorWidth } from "./placer";
+import { pointInPolygon, insetInside, doorWidth, getDoorRectangles } from "./placer";
+import { openOverlap, collinearOverlap, convexOverlap, freePassage, type OpenSegment } from "./openKitchen";
 
 // ─── Dimensions ──────────────────────────────────────────────────────────────
 
@@ -60,6 +61,24 @@ export function kitchenModuleCount(aptType: number): number {
   if (aptType <= 3) return 6;
   return 8;
 }
+
+/** Plain counter wanted beside fridge, sink and hob: 1.8 m of worktop to
+ *  prepare food on. The 4-module studio preset left 0.6 m (or nothing usable
+ *  once an L's blind corner took a module). */
+export const WORKTOP_MODULES = 3;
+
+/**
+ * Usable (non-blind) modules a kitchen aims for: the preset count of its
+ * apartment type, but never fewer than the three appliances plus
+ * WORKTOP_MODULES. A blind corner module comes on top. Smaller kitchens are
+ * still made when this does not fit (down to MIN_MODULES).
+ */
+export function kitchenUsableTarget(aptType: number): number {
+  return Math.max(kitchenModuleCount(aptType), 3 + WORKTOP_MODULES);
+}
+
+const usableModules = (run: { modules: { blind: boolean }[] }): number =>
+  run.modules.reduce((k, m) => k + (m.blind ? 0 : 1), 0);
 
 // ─── Vector helpers ──────────────────────────────────────────────────────────
 
@@ -118,6 +137,11 @@ export interface Module {
   blind: boolean;
   atWindow: boolean;
   doorDist: number;
+  /** Open kitchens: the module reaches past the opening into the living room
+   *  (worktop extension, plain counter only). `cut` is where, along the
+   *  module (0…MODULE from its base), the kitchen ends. */
+  ext?: boolean;
+  cut?: number;
 }
 
 function makeModule(base: Point2D, along: Point2D, into: Point2D, blind: boolean, room: Room): Module {
@@ -157,10 +181,23 @@ export interface Run {
     aDir: Point2D; aNormal: Point2D; aLen: number;
     bDir: Point2D; bNormal: Point2D; bLen: number;
   } | null;
-  /** Straight runs carry their end points instead. */
+  /** Straight runs carry their end points instead. A galley carries its first
+   *  strip here and its second strip in `galley`. */
   straight: { start: Point2D; end: Point2D; into: Point2D } | null;
+  /** Galley (open kitchens only): the second strip, facing the first across
+   *  the aisle. modules[0…split) are strip one, modules[split…) strip two. */
+  galley?: { start: Point2D; end: Point2D; into: Point2D; split: number } | null;
   /** 0…1 — how much of the required transition zone is actually free floor. */
   clearanceRatio: number;
+  /** The wall(s) the run stands on, with the stretch it covers (t0…t1 from a,
+   *  in metres). Straight runs: one; L runs: leg A then leg B, each measured
+   *  from the corner. Used to rank open kitchens (slivers at run ends). */
+  walls: { a: Point2D; b: Point2D; t0: number; t1: number }[];
+  /** Worktop extension: index into room.extendInto of the living room the
+   *  ext modules stand in, the floor they take there (footprint and work
+   *  zone of each module's living-room part), and the length of the living-
+   *  room wall they stand against (ranking). */
+  extension?: { into: number; zones: Point2D[][]; wall: number };
 }
 
 /** Modules of one leg running out of `origin` along `dir`, module 0 at the origin. */
@@ -198,11 +235,52 @@ function clearanceCoverage(m: Module, poly: Point2D[]): number {
 function validateRun(modules: Module[], edgePoly: Point2D[], collisionPoly: Point2D[]): number | null {
   let total = 0;
   for (const m of modules) {
+    if (m.ext) { total += 1; continue; } // see extensionOk
     if (!insetInside(m.footprint, edgePoly)) return null;
     if (collisionPoly !== edgePoly && !insetInside(m.footprint, collisionPoly)) return null;
     total += clearanceCoverage(m, collisionPoly);
   }
   return total / modules.length;
+}
+
+/** Backing overlap (metres) above which a module counts as standing on an opening. */
+const OPEN_BACKING_TOL = 0.02;
+/** Free width (metres) of the opening that must stay a passage. */
+export const OPEN_PASSAGE = 0.9;
+/** Minimum aisle between the two counter fronts of a galley. */
+const GALLEY_AISLE = 1.2;
+
+/**
+ * Open-kitchen rules for one run (see getFlexibleKitchenPlacements):
+ *   • no module's back — the full 0.6 m backing side, and both walls of an L's
+ *     blind corner — may lie on an open segment;
+ *   • every transition zone lies wholly on the kitchen's own floor.
+ */
+function openRunOk(
+  modules: Module[],
+  corner: { c: Point2D; aDir: Point2D; bDir: Point2D } | null,
+  collisionPoly: Point2D[],
+  openSegs: OpenSegment[],
+): boolean {
+  const backs: [Point2D, Point2D][] = modules.map((m) => [m.base, add(m.base, mul(m.along, MODULE))]);
+  if (corner) {
+    backs.push([corner.c, add(corner.c, mul(corner.aDir, MODULE))]);
+    backs.push([corner.c, add(corner.c, mul(corner.bDir, MODULE))]);
+  }
+  for (const [p, q] of backs) {
+    if (openOverlap(p, q, openSegs) > OPEN_BACKING_TOL) return false;
+  }
+  for (const m of modules) {
+    if (!m.blind && !m.ext && !insetInside(m.clearance, collisionPoly)) return false;
+  }
+  return true;
+}
+
+/** The opening keeps a free passage of OPEN_PASSAGE (or all of it, if shorter). */
+export function passageOk(openSegs: OpenSegment[], footprints: Point2D[][]): boolean {
+  if (!openSegs.length) return true;
+  const longest = Math.max(...openSegs.map(([a, b]) => dist(a, b)));
+  return freePassage(openSegs, footprints) >= Math.min(OPEN_PASSAGE, longest) - 1e-6;
 }
 
 // ─── Run enumeration ─────────────────────────────────────────────────────────
@@ -229,12 +307,49 @@ function runAnchors(room: Room, a: Point2D, b: Point2D, wallLen: number, runLen:
     raw.push(t + dw / 2);          // run starts just past the doorway
     raw.push(t - dw / 2 - runLen); // run ends just before it
   }
+  // Open kitchens: a wall may be open in part — let runs butt up to the
+  // opening from either side, so its closed stretch is usable.
+  for (const [s0, s1] of room.openSegments ?? []) {
+    if (Math.abs(dot(sub(s0, a), perp(dir))) > 0.03 || Math.abs(dot(sub(s1, a), perp(dir))) > 0.03) continue;
+    const t0 = Math.min(dot(sub(s0, a), dir), dot(sub(s1, a), dir));
+    const t1 = Math.max(dot(sub(s0, a), dir), dot(sub(s1, a), dir));
+    raw.push(t1);          // run starts just past the opening
+    raw.push(t0 - runLen); // run ends just before it
+  }
   const out: number[] = [];
   for (const v of raw) {
     const c = Math.min(Math.max(v, 0), slack);
     if (!out.some((o) => Math.abs(o - c) < 0.05)) out.push(c);
   }
   return out;
+}
+
+/**
+ * One L run out of its two legs (module 0 of each at the corner). legB[0]
+ * covers the same corner as legA[0] — keep one module for the two, shaped as
+ * the cell both legs actually leave free: bounded by the two walls, the two
+ * legs' first cut lines, and the mitre between them. At 90° that hexagon
+ * collapses to the plain 0.6 × 0.6 square; on a slanted wall it fills the
+ * wedge instead of leaving a notch between the legs. Path order: out along
+ * leg A, through the corner, out along leg B.
+ */
+function joinLegs(
+  legA: Module[], legB: Module[], c: Point2D,
+  aDir: Point2D, aNormal: Point2D, bDir: Point2D, bNormal: Point2D,
+): Module[] {
+  legA[0].footprint = dedupe([
+    at(c, aDir, aNormal, MODULE, 0),
+    c,
+    at(c, bDir, bNormal, MODULE, 0),
+    at(c, bDir, bNormal, MODULE, MODULE),
+    mitre(c, aNormal, bNormal, MODULE),
+    at(c, aDir, aNormal, MODULE, MODULE),
+  ]);
+  legA[0].center = [
+    legA[0].footprint.reduce((s, p) => s + p[0], 0) / legA[0].footprint.length,
+    legA[0].footprint.reduce((s, p) => s + p[1], 0) / legA[0].footprint.length,
+  ];
+  return [...legA.slice(1).reverse(), legA[0], ...legB.slice(1)];
 }
 
 /** Exported for tests. */
@@ -245,6 +360,10 @@ export function enumerateRuns(room: Room, count: number, opts: PlacementOptions)
   const collisionPoly = opts.collisionPolygon ?? poly;
   const runs: Run[] = [];
   const runLen = count * MODULE;
+  const openSegs = room.openSegments ?? [];
+  const open = !!room.openKitchen || openSegs.length > 0;
+  const openOk = (mods: Module[], corner: { c: Point2D; aDir: Point2D; bDir: Point2D } | null) =>
+    openRunOk(mods, corner, collisionPoly, openSegs) && passageOk(openSegs, mods.map((m) => m.footprint));
 
   // ── Straight runs: one wall, anchored flush / centred / beside a doorway ──
   for (let i = 0; i < n; i++) {
@@ -259,11 +378,13 @@ export function enumerateRuns(room: Room, count: number, opts: PlacementOptions)
       const modules = legModules(start, dir, into, count, false, room);
       const ratio = validateRun(modules, edgePoly, collisionPoly);
       if (ratio === null) continue;
+      if (open && !openOk(modules, null)) continue;
       runs.push({
         modules,
         corner: null,
         straight: { start, end: add(start, mul(dir, runLen)), into },
         clearanceRatio: ratio,
+        walls: [{ a, b, t0: anchor, t1: anchor + runLen }],
       });
     }
   }
@@ -296,27 +417,10 @@ export function enumerateRuns(room: Room, count: number, opts: PlacementOptions)
 
       const legA = legModules(c, aDir, aNormal, aCount, true, room);
       const legB = legModules(c, bDir, bNormal, bCount, true, room);
-      // legB[0] covers the same corner as legA[0] — keep one module for the two,
-      // shaped as the cell both legs actually leave free: bounded by the two
-      // walls, the two legs' first cut lines, and the mitre between them. At 90°
-      // that hexagon collapses to the plain 0.6 × 0.6 square; on a slanted wall
-      // it fills the wedge instead of leaving a notch between the legs.
-      legA[0].footprint = dedupe([
-        at(c, aDir, aNormal, MODULE, 0),
-        c,
-        at(c, bDir, bNormal, MODULE, 0),
-        at(c, bDir, bNormal, MODULE, MODULE),
-        mitre(c, aNormal, bNormal, MODULE),
-        at(c, aDir, aNormal, MODULE, MODULE),
-      ]);
-      legA[0].center = [
-        legA[0].footprint.reduce((s, p) => s + p[0], 0) / legA[0].footprint.length,
-        legA[0].footprint.reduce((s, p) => s + p[1], 0) / legA[0].footprint.length,
-      ];
-      // Path order: out along leg A, through the corner, out along leg B.
-      const modules = [...legA.slice(1).reverse(), legA[0], ...legB.slice(1)];
+      const modules = joinLegs(legA, legB, c, aDir, aNormal, bDir, bNormal);
       const ratio = validateRun(modules, edgePoly, collisionPoly);
       if (ratio === null) continue;
+      if (open && !openOk(modules, { c, aDir, bDir })) continue;
       runs.push({
         modules,
         corner: {
@@ -326,10 +430,311 @@ export function enumerateRuns(room: Room, count: number, opts: PlacementOptions)
         },
         straight: null,
         clearanceRatio: ratio,
+        walls: [
+          { a: c, b: prev, t0: 0, t1: aCount * MODULE },
+          { a: c, b: next, t0: 0, t1: bCount * MODULE },
+        ],
       });
     }
   }
 
+  if (open) runs.push(...enumerateGalleys(room, count, edgePoly, collisionPoly, openSegs));
+
+  return runs;
+}
+
+// ─── Worktop extension (open kitchens) ───────────────────────────────────────
+//
+// A small open kitchen may have closed walls only just long enough for fridge,
+// sink and hob (a 2.35 m wall takes three modules), leaving next to no
+// worktop. Where the kitchen wall carries straight on as a wall of the living
+// room across the opening, one leg of an I or L run may then continue past the
+// opening line by up to EXT_MAX, as plain counter:
+//   • only when the kitchen falls short of its usable target inside its own
+//     walls, and only to reach more usable modules than that (it is a way to
+//     get worktop, not to move the kitchen into the living room);
+//   • the modules past the line carry no appliance; one leg per run;
+//   • the kitchen's edge at the end of the wall must be open over the module
+//     and its work zone, and the living-room part of every module and of its
+//     work zone must lie on the living room's floor, backed by one of its walls
+//     (not its side of the opening), clear of its door swings;
+//   • the opening keeps its free passage (passageOk, as for every run).
+// The caller reserves the extension's floor in the living room (Run.extension
+// → PlacedFurniture.extension) and drops it when the living room loses by it.
+
+/** Furthest (metres) a leg may reach past the opening line: two modules. */
+export const EXT_MAX = 2 * MODULE;
+/** A leg overrunning its wall by less than this is still inside the kitchen. */
+const EXT_TOL = 0.02;
+/** Ranking cost per module standing (partly) in the living room. */
+const EXT_COST = 0.5;
+/** Ranking bonus per metre (up to EXT_WALL_CAP) of the living-room wall the
+ *  extension stands on: a counter carrying on along a long wall reads as one
+ *  kitchen wall; one filling a short recess less so. A tie-breaker. */
+const EXT_WALL_BONUS = 0.2;
+const EXT_WALL_CAP = 3;
+
+/**
+ * A counter on the kitchen wall that ends at `vertex` may run on past it:
+ * the kitchen's other edge there (towards `other`) leaves the wall at about a
+ * right angle into the room and is open over the module and its work zone.
+ */
+function openEndAt(vertex: Point2D, other: Point2D, into: Point2D, openSegs: OpenSegment[]): boolean {
+  const e = norm(sub(other, vertex));
+  if (dot(e, into) < 0.9) return false;
+  const reach = MODULE + CLEARANCE;
+  return openOverlap(vertex, add(vertex, mul(e, reach)), openSegs) >= reach - 0.03;
+}
+
+/** Flag the modules of a leg (module k at k·MODULE from its origin) that reach
+ *  past `wallLen`, the end of the kitchen wall. Returns how many. */
+function markExtension(mods: Module[], wallLen: number): number {
+  let n = 0;
+  mods.forEach((m, k) => {
+    const cut = wallLen - k * MODULE;
+    if (cut < MODULE - EXT_TOL) {
+      m.ext = true;
+      m.cut = Math.max(0, cut);
+      n++;
+    }
+  });
+  return n;
+}
+
+/**
+ * Check the ext modules of a run: the kitchen part of each against the
+ * kitchen (as validateRun / openRunOk do for whole modules), the living-room
+ * part against one room of `room.extendInto`. Returns that room and the floor
+ * to reserve there, or null.
+ */
+function extensionOk(
+  modules: Module[], room: Room, edgePoly: Point2D[], collisionPoly: Point2D[],
+): NonNullable<Run["extension"]> | null {
+  const ext = modules.filter((m) => m.ext);
+  if (!ext.length) return null;
+  const rect = (m: Module, u0: number, v0: number, u1: number, v1: number) => localRect(m, u0, v0, u1, v1).points;
+  for (const m of ext) {
+    const c = m.cut ?? 0;
+    if (c <= EXT_TOL) continue;
+    const fp = rect(m, 0, 0, c, MODULE);
+    if (!insetInside(fp, edgePoly) || !insetInside(fp, collisionPoly)) return null;
+    if (!insetInside(rect(m, 0, MODULE, c, MODULE + CLEARANCE), collisionPoly)) return null;
+  }
+  const livings = room.extendInto ?? [];
+  for (let li = 0; li < livings.length; li++) {
+    const lr = livings[li].room;
+    const lp = lr.polygon;
+    const doors = getDoorRectangles(lr);
+    const zones: Point2D[][] = [];
+    let wall = 0;
+    const fits = ext.every((m) => {
+      const c = m.cut ?? 0;
+      const fp = rect(m, c, 0, MODULE, MODULE);
+      const cl = rect(m, c, MODULE, MODULE, MODULE + CLEARANCE);
+      if (!insetInside(fp, lp) || !insetInside(cl, lp)) return false;
+      if (doors.some((d) => convexOverlap(d, fp) || convexOverlap(d, cl))) return false;
+      const b0 = fp[0], b1 = fp[1];
+      let onWall = 0;
+      for (let i = 0; i < lp.length; i++) {
+        const o = collinearOverlap(b0, b1, lp[i], lp[(i + 1) % lp.length]);
+        if (o > 0) wall = Math.max(wall, dist(lp[i], lp[(i + 1) % lp.length]));
+        onWall += o;
+      }
+      if (onWall < dist(b0, b1) - EXT_TOL) return false;
+      if (openOverlap(b0, b1, lr.openSegments ?? []) > OPEN_BACKING_TOL) return false;
+      zones.push(fp, cl);
+      return true;
+    });
+    if (fits) return { into: li, zones, wall };
+  }
+  return null;
+}
+
+/**
+ * I and L runs of `count` modules of which one leg reaches past the opening
+ * (see the section header). Every run returned has at least one ext module.
+ */
+export function enumerateExtendedRuns(room: Room, count: number, opts: PlacementOptions): Run[] {
+  const openSegs = room.openSegments ?? [];
+  if (!room.extendInto?.length || !openSegs.length) return [];
+  const poly = room.polygon;
+  const n = poly.length;
+  const edgePoly = opts.edgePolygon ?? poly;
+  const collisionPoly = opts.collisionPolygon ?? poly;
+  const runLen = count * MODULE;
+  const runs: Run[] = [];
+  const check = (modules: Module[], corner: { c: Point2D; aDir: Point2D; bDir: Point2D } | null) => {
+    const ratio = validateRun(modules, edgePoly, collisionPoly);
+    if (ratio === null) return null;
+    if (!openRunOk(modules, corner, collisionPoly, openSegs)) return null;
+    if (!passageOk(openSegs, modules.map((m) => m.footprint))) return null;
+    const extension = extensionOk(modules, room, edgePoly, collisionPoly);
+    return extension ? { ratio, extension } : null;
+  };
+
+  // ── I: one wall, overrunning the end where the kitchen is open ──
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    const wallLen = dist(a, b);
+    const into = inwardNormal(a, b, poly);
+    const ends: [Point2D, Point2D, Point2D][] = [[a, b, poly[(i + 2) % n]], [b, a, poly[(i - 1 + n) % n]]];
+    for (const [p, q, other] of ends) {
+      if (!openEndAt(q, other, into, openSegs)) continue;
+      const dir = norm(sub(q, p));
+      for (const t0 of runAnchors(room, p, q, wallLen + EXT_MAX, runLen)) {
+        const over = t0 + runLen - wallLen;
+        if (over <= EXT_TOL || over > EXT_MAX + 1e-9) continue;
+        const start = add(p, mul(dir, t0));
+        const modules = legModules(start, dir, into, count, false, room);
+        markExtension(modules, wallLen - t0);
+        const r = check(modules, null);
+        if (!r) continue;
+        runs.push({
+          modules,
+          corner: null,
+          straight: { start, end: add(start, mul(dir, runLen)), into },
+          clearanceRatio: r.ratio,
+          walls: [{ a: p, b: q, t0, t1: t0 + runLen }],
+          extension: r.extension,
+        });
+      }
+    }
+  }
+
+  // ── L: as in enumerateRuns, with exactly one leg overrunning its wall ──
+  for (let i = 0; i < n; i++) {
+    const c = poly[i];
+    const prev = poly[(i - 1 + n) % n];
+    const next = poly[(i + 1) % n];
+    const aDir = norm(sub(prev, c));
+    const bDir = norm(sub(next, c));
+    if (Math.abs(dot(aDir, bDir)) > 0.34) continue;
+    if (!pointInPolygon(at(c, aDir, bDir, 0.3, 0.3), poly)) continue;
+    const aNormal = inwardNormal(c, prev, poly);
+    const bNormal = inwardNormal(c, next, poly);
+    if (dot(aNormal, bDir) < 0.9 || dot(bNormal, aDir) < 0.9) continue;
+    const aWall = dist(c, prev);
+    const bWall = dist(c, next);
+    const aOpen = openEndAt(prev, poly[(i - 2 + 2 * n) % n], aNormal, openSegs);
+    const bOpen = openEndAt(next, poly[(i + 2) % n], bNormal, openSegs);
+    if (!aOpen && !bOpen) continue;
+    for (let aCount = 2; aCount <= count - 1; aCount++) {
+      const bCount = count + 1 - aCount;
+      if (bCount < 2) continue;
+      const overA = aCount * MODULE - aWall;
+      const overB = bCount * MODULE - bWall;
+      const extA = aOpen && overA > EXT_TOL && overA <= EXT_MAX + 1e-9 && overB <= 1e-9;
+      const extB = bOpen && overB > EXT_TOL && overB <= EXT_MAX + 1e-9 && overA <= 1e-9;
+      if (!extA && !extB) continue;
+      const legA = legModules(c, aDir, aNormal, aCount, true, room);
+      const legB = legModules(c, bDir, bNormal, bCount, true, room);
+      if (extA) markExtension(legA, aWall);
+      else markExtension(legB, bWall);
+      const modules = joinLegs(legA, legB, c, aDir, aNormal, bDir, bNormal);
+      const r = check(modules, { c, aDir, bDir });
+      if (!r) continue;
+      runs.push({
+        modules,
+        corner: {
+          point: c,
+          aDir, aNormal, aLen: aCount * MODULE,
+          bDir, bNormal, bLen: bCount * MODULE,
+        },
+        straight: null,
+        clearanceRatio: r.ratio,
+        walls: [
+          { a: c, b: prev, t0: 0, t1: aCount * MODULE },
+          { a: c, b: next, t0: 0, t1: bCount * MODULE },
+        ],
+        extension: r.extension,
+      });
+    }
+  }
+  return runs;
+}
+
+/**
+ * Galley (open kitchens only): two straight strips on two opposite, parallel
+ * walls whose counters face each other across an aisle ≥ GALLEY_AISLE. The
+ * module count is split over the strips, each ≥ 2 modules.
+ */
+function enumerateGalleys(
+  room: Room, count: number, edgePoly: Point2D[], collisionPoly: Point2D[], openSegs: OpenSegment[],
+): Run[] {
+  const poly = room.polygon;
+  const n = poly.length;
+  const runs: Run[] = [];
+  type Strip = { modules: Module[]; start: Point2D; end: Point2D; into: Point2D; t0: number; ratio: number };
+  const cache = new Map<string, Strip[]>();
+  const strips = (i: number, c: number): Strip[] => {
+    const key = `${i}:${c}`;
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const a = poly[i], b = poly[(i + 1) % n];
+    const wallLen = dist(a, b), len = c * MODULE;
+    const dir = norm(sub(b, a));
+    const into = inwardNormal(a, b, poly);
+    const out: Strip[] = [];
+    if (wallLen >= len - 1e-9) {
+      for (const t0 of runAnchors(room, a, b, wallLen, len)) {
+        const start = add(a, mul(dir, t0));
+        const modules = legModules(start, dir, into, c, false, room);
+        const ratio = validateRun(modules, edgePoly, collisionPoly);
+        if (ratio === null || !openRunOk(modules, null, collisionPoly, openSegs)) continue;
+        out.push({ modules, start, end: add(start, mul(dir, len)), into, t0, ratio });
+      }
+    }
+    cache.set(key, out);
+    return out;
+  };
+
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = poly[i], b = poly[(i + 1) % n];
+      const c = poly[j], d = poly[(j + 1) % n];
+      const intoA = inwardNormal(a, b, poly);
+      const intoB = inwardNormal(c, d, poly);
+      if (dot(intoA, intoB) > -0.95) continue;
+      const gap = dot(sub(c, a), intoA);
+      if (gap < 2 * MODULE + GALLEY_AISLE - 1e-6) continue;
+      const dirA = norm(sub(b, a));
+      for (let cA = 2; cA <= count - 2; cA++) {
+        const cB = count - cA;
+        for (const sa of strips(i, cA)) {
+          for (const sb of strips(j, cB)) {
+            // Facing: the strips overlap by at least a module along the aisle.
+            const tb0 = dot(sub(sb.start, a), dirA), tb1 = dot(sub(sb.end, a), dirA);
+            const ov = Math.min(sa.t0 + cA * MODULE, Math.max(tb0, tb1)) - Math.max(sa.t0, Math.min(tb0, tb1));
+            if (ov < MODULE - 1e-6) continue;
+            // A galley reads as one kitchen when its strips line up at one end.
+            const aligned = Math.abs(sa.t0 - Math.min(tb0, tb1)) < 0.05
+              || Math.abs(sa.t0 + cA * MODULE - Math.max(tb0, tb1)) < 0.05;
+            if (!aligned) continue;
+            // Nothing (a wall jog) between them.
+            const mid: Point2D = [
+              (sa.modules[0].center[0] + sb.modules[0].center[0]) / 2,
+              (sa.modules[0].center[1] + sb.modules[0].center[1]) / 2,
+            ];
+            if (!pointInPolygon(mid, collisionPoly)) continue;
+            const modules = [...sa.modules, ...sb.modules];
+            if (!passageOk(openSegs, modules.map((m) => m.footprint))) continue;
+            runs.push({
+              modules,
+              corner: null,
+              straight: { start: sa.start, end: sa.end, into: sa.into },
+              galley: { start: sb.start, end: sb.end, into: sb.into, split: cA },
+              clearanceRatio: Math.min(sa.ratio, sb.ratio),
+              walls: [
+                { a, b, t0: sa.t0, t1: sa.t0 + cA * MODULE },
+                { a: c, b: d, t0: dot(sub(sb.start, c), norm(sub(d, c))), t1: dot(sub(sb.start, c), norm(sub(d, c))) + cB * MODULE },
+              ],
+            });
+          }
+        }
+      }
+    }
+  }
   return runs;
 }
 
@@ -356,8 +761,12 @@ function legScore(d: number): number {
 export function assignAppliances(modules: Module[]): Assignment | null {
   const n = modules.length;
   const usable: number[] = [];
-  for (let i = 0; i < n; i++) if (!modules[i].blind) usable.push(i);
+  for (let i = 0; i < n; i++) if (!modules[i].blind && !modules[i].ext) usable.push(i);
   if (usable.length < 3) return null;
+  // Ends of the counter inside the kitchen (a worktop extension runs on past one).
+  let lo = 0, hi = n - 1;
+  while (lo < n && modules[lo].ext) lo++;
+  while (hi >= 0 && modules[hi].ext) hi--;
 
   let best: Assignment | null = null;
 
@@ -384,7 +793,7 @@ export function assignAppliances(modules: Module[]): Assignment | null {
         if (modules[sink].atWindow) s += 1.2;
         if (modules[hob].atWindow) s -= 2;
         // Fridge: at a run end, near the door, so groceries don't cross the room.
-        if (fridge === 0 || fridge === n - 1) s += 0.8;
+        if (fridge === lo || fridge === hi) s += 0.8;
         if (Number.isFinite(modules[fridge].doorDist)) {
           s += 0.6 * Math.max(0, 1 - modules[fridge].doorDist / 4);
         }
@@ -400,6 +809,52 @@ export function assignAppliances(modules: Module[]): Assignment | null {
         }
 
         if (!best || s > best.score) best = { fridge, sink, hob, score: s };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Galley: sink and hob share one strip (hob off the strip's ends, landing
+ * space beside both); the fridge takes an end of either strip. Across the
+ * aisle the work triangle is a real triangle, so the same NKBA leg scoring
+ * applies; the "sink between" workflow rule becomes "sink nearer the fridge
+ * than the hob" when the fridge is on the other strip.
+ */
+export function assignGalley(modules: Module[], split: number): Assignment | null {
+  const n = modules.length;
+  const ends = [...new Set([0, split - 1, split, n - 1])];
+  let best: Assignment | null = null;
+  for (const [s0, s1] of [[0, split], [split, n]]) {
+    if (s1 - s0 < 3) continue;
+    for (let sink = s0; sink < s1; sink++) {
+      for (let hob = s0 + 1; hob < s1 - 1; hob++) {
+        if (hob === sink) continue;
+        for (const fridge of ends) {
+          if (fridge === sink || fridge === hob) continue;
+          const same = fridge >= s0 && fridge < s1;
+          if (same && Math.abs(hob - fridge) < 2) continue;
+          const dFS = dist(modules[fridge].center, modules[sink].center);
+          const dSH = dist(modules[sink].center, modules[hob].center);
+          const dHF = dist(modules[hob].center, modules[fridge].center);
+          let s = 0;
+          if (same ? (sink - fridge) * (sink - hob) < 0 : dFS <= dHF) s += 3;
+          s += 1.5 * (legScore(dFS) + legScore(dSH) + legScore(dHF));
+          if (dFS + dSH + dHF > 7.9) s -= 2;
+          if (modules[sink].atWindow) s += 1.2;
+          if (modules[hob].atWindow) s -= 2;
+          s += 0.8; // the fridge is always at a strip end
+          if (Number.isFinite(modules[fridge].doorDist)) {
+            s += 0.6 * Math.max(0, 1 - modules[fridge].doorDist / 4);
+          }
+          const isCounter = (i: number) => i >= s0 && i < s1 && i !== fridge && i !== sink && i !== hob;
+          if (isCounter(sink - 1)) s += 0.3;
+          if (isCounter(sink + 1)) s += 0.3;
+          if (isCounter(hob - 1)) s += 0.3;
+          if (isCounter(hob + 1)) s += 0.3;
+          if (!best || s > best.score) best = { fridge, sink, hob, score: s };
+        }
       }
     }
   }
@@ -444,6 +899,23 @@ function drawModule(m: Module, kind: Appliance): Geo[] {
 
 /** Footprint (depth = MODULE) or clearance envelope (depth = MODULE + CLEARANCE). */
 function runOutline(run: Run, depth: number): Point2D[] {
+  if (run.straight && run.galley) {
+    // Two strips as one ring: strip one, a zero-width slit across the aisle,
+    // strip two, and back along the slit. Area and drawing match the two
+    // rectangles; the wire format has room for only one polygon.
+    // The slit joins the two closest back corners, so it runs along a wall.
+    const s = run.straight, g = run.galley;
+    const ringB = [g.start, g.end, add(g.end, mul(g.into, depth)), add(g.start, mul(g.into, depth))];
+    const ringA = [s.start, s.end, add(s.end, mul(s.into, depth)), add(s.start, mul(s.into, depth))];
+    let ia = 0, ib = 0, best = Infinity;
+    for (const i of [0, 1]) for (const j of [0, 1]) {
+      const d = dist(ringA[i], ringB[j]);
+      if (d < best) { best = d; ia = i; ib = j; }
+    }
+    const rot = (r: Point2D[], k: number) => [...r.slice(k), ...r.slice(0, k)];
+    const a = rot(ringA, ia), b = rot(ringB, ib);
+    return [...a, a[0], ...b, b[0]];
+  }
   if (run.straight) {
     const { start, end, into } = run.straight;
     return [start, end, add(end, mul(into, depth)), add(start, mul(into, depth))];
@@ -475,6 +947,139 @@ function signature(run: Run): string {
   return run.modules.map((m) => `${m.center[0].toFixed(2)},${m.center[1].toFixed(2)}`).join(";");
 }
 
+/** Order-free footprint signature: the same counter walked the other way is one run. */
+function footprintSignature(run: Run): string {
+  return run.modules.map((m) => `${m.center[0].toFixed(2)},${m.center[1].toFixed(2)}`).sort().join(";");
+}
+
+// ─── Open-kitchen ranking ────────────────────────────────────────────────────
+//
+// In an open kitchen the counter should read as the back of the kitchen seen
+// from the living room, not as a screen across it. Module count comes first
+// (the step-down search only drops a module when nothing fits); among layouts
+// with the same count, strongest first:
+//   I on the back wall (opposite and parallel to the opening) › I on a side
+//   wall › I on any other closed wall › L › II (galley).
+// The tier bonuses are far apart so a tier is never overturned by appliance
+// scoring; within a tier, layouts lose points for crowding the opening and for
+// leaving a useless sliver of wall at a run end.
+
+const TIER_BACK = 30;
+const TIER_SIDE = 20;
+const TIER_OTHER = 10;
+const TIER_GALLEY = -10;
+/** A counter closer than this to the opening narrows it. */
+const MOUTH_CLEAR = 0.6;
+/** A wall stub shorter than this at a run end is wasted. */
+const SLIVER = 0.3;
+
+function distPointSeg(p: Point2D, a: Point2D, b: Point2D): number {
+  const ab = sub(b, a);
+  const l2 = dot(ab, ab);
+  const t = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2));
+  return dist(p, add(a, mul(ab, t)));
+}
+
+/** Gap between a polygon and a segment (both convex here; touching = 0). */
+function distPolySeg(poly: Point2D[], a: Point2D, b: Point2D): number {
+  let d = Infinity;
+  for (const p of poly) d = Math.min(d, distPointSeg(p, a, b));
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    d = Math.min(d, distPointSeg(a, p, q), distPointSeg(b, p, q));
+  }
+  return d;
+}
+
+/** Outward direction (kitchen → living room) of the longest opening. */
+function openingOutward(poly: Point2D[], segs: OpenSegment[]): Point2D | null {
+  const groups: { dir: Point2D; total: number }[] = [];
+  for (const [s0, s1] of segs) {
+    const l = dist(s0, s1);
+    if (l < 1e-9) continue;
+    const inward = inwardNormal(s0, s1, poly);
+    const out = mul(inward, -1);
+    const g = groups.find((x) => dot(x.dir, out) > 0.9);
+    if (g) g.total += l;
+    else groups.push({ dir: out, total: l });
+  }
+  groups.sort((x, y) => y.total - x.total);
+  return groups[0]?.dir ?? null;
+}
+
+/** Wall stub left beside each end of the stretch t0…t1 of wall a→b. */
+function endGaps(room: Room, w: Run["walls"][number]): number[] {
+  const L = dist(w.a, w.b);
+  const dir = norm(sub(w.b, w.a));
+  const nrm = perp(dir);
+  const stops = [0, L];
+  for (const [s0, s1] of room.openSegments ?? []) {
+    if (Math.abs(dot(sub(s0, w.a), nrm)) > 0.03 || Math.abs(dot(sub(s1, w.a), nrm)) > 0.03) continue;
+    stops.push(dot(sub(s0, w.a), dir), dot(sub(s1, w.a), dir));
+  }
+  const dw = doorWidth(room.name);
+  for (const door of room.doors ?? []) {
+    if (Math.abs(dot(sub(door, w.a), nrm)) > 0.35) continue;
+    const t = dot(sub(door, w.a), dir);
+    stops.push(t - dw / 2, t + dw / 2);
+  }
+  const before = Math.min(...stops.filter((s) => s <= w.t0 + 1e-6).map((s) => w.t0 - s));
+  const after = Math.min(...stops.filter((s) => s >= w.t1 - 1e-6).map((s) => s - w.t1));
+  return [before, after];
+}
+
+function openKitchenBonus(run: Run, room: Room, outward: Point2D | null): number {
+  const segs = room.openSegments ?? [];
+  let s = 0;
+  if (run.galley) {
+    s += TIER_GALLEY;
+  } else if (run.straight) {
+    const d = outward ? dot(run.straight.into, outward) : 0;
+    s += d > 0.9 ? TIER_BACK : Math.abs(d) < 0.3 ? TIER_SIDE : TIER_OTHER;
+  }
+  // Crowding the opening: counter within MOUTH_CLEAR of it, worst module counts.
+  let foot = Infinity;
+  let zone = Infinity;
+  for (const m of run.modules) {
+    if (m.ext) continue; // the extension stands past the opening by design
+    for (const [a, b] of segs) {
+      foot = Math.min(foot, distPolySeg(m.footprint, a, b));
+      if (!m.blind) zone = Math.min(zone, distPolySeg(m.clearance, a, b));
+    }
+  }
+  if (foot < MOUTH_CLEAR) s -= 3 * (1 - foot / MOUTH_CLEAR);
+  if (zone < 0.05) s -= 0.5;
+  // Slivers: a stub of wall 1 cm – 0.3 m long beside a run end.
+  for (const w of run.walls) {
+    for (const g of endGaps(room, w)) if (g > 0.01 && g < SLIVER) s -= 1.5;
+  }
+  return s;
+}
+
+/**
+ * Open kitchens: a layout whose strips sit on the same walls with the same
+ * module counts, each nudged less than SLIVER along its wall, is the same
+ * kitchen, not another option (anchors flush / centred / beside an opening
+ * often land a few cm apart). Keeps the best-ranked of each such group;
+ * `scored` must already be sorted best first.
+ */
+function dropNudgedRuns(scored: ScoredRun[]): ScoredRun[] {
+  const kept: ScoredRun[] = [];
+  const twins = (x: Run, y: Run) =>
+    !!x.corner === !!y.corner && !!x.galley === !!y.galley
+    && x.walls.length === y.walls.length
+    && x.walls.every((w, i) => {
+      const v = y.walls[i];
+      return dist(w.a, v.a) < 1e-6 && dist(w.b, v.b) < 1e-6
+        && Math.abs((w.t1 - w.t0) - (v.t1 - v.t0)) < 1e-6
+        && Math.abs(w.t0 - v.t0) < SLIVER;
+    });
+  for (const s of scored) {
+    if (!kept.some((k) => twins(k.run, s.run))) kept.push(s);
+  }
+  return kept;
+}
+
 /**
  * Every worthwhile way to lay a modular kitchen into `room`, best first.
  *
@@ -483,6 +1088,18 @@ function signature(run: Run): string {
  * count that fits wins. If nothing fits with its transition zones on real floor,
  * the search runs again accepting partial clearance, so a tight room still gets
  * a kitchen (with a lower score, and the zones visibly clipped).
+ *
+ * Open kitchens (`room.openKitchen` or `room.openSegments` non-empty) follow
+ * stricter rules: no module backs onto an opening and at least OPEN_PASSAGE of
+ * the opening stays free of counters (enumerateRuns), transition zones must lie
+ * wholly on the kitchen's floor (no partial-clearance retry), only I, L and
+ * galley (II) layouts on real walls are made, and runs are ranked by
+ * openKitchenBonus — I on the back wall › I on a side wall › L › II. May
+ * return [] (an honest failure: open kitchens never fall back to presets).
+ * An open kitchen that misses its usable target inside its walls may also get
+ * runs whose leg continues past the opening into a living room of
+ * `room.extendInto` as plain worktop (enumerateExtendedRuns); those carry
+ * `placed.extension`, which the caller must reserve in that room.
  */
 export function getFlexibleKitchenPlacements(
   room: Room,
@@ -491,32 +1108,92 @@ export function getFlexibleKitchenPlacements(
   opts: PlacementOptions = {},
   maxOptions = 24,
 ): PlacementOption[] {
-  const target = kitchenModuleCount(aptType);
+  const target = kitchenUsableTarget(aptType);
+  const segs = room.openSegments ?? [];
+  const open = !!room.openKitchen || segs.length > 0;
+  const outward = segs.length ? openingOutward(room.polygon, segs) : null;
 
   let scored: ScoredRun[] = [];
-  for (const minRatio of [0.999, 0.5]) {
-    for (let count = target; count >= MIN_MODULES && scored.length === 0; count--) {
+  // Sizes are counted in usable modules (a blind corner is no worktop), up to
+  // `target`; the run may carry one blind corner on top. Closed: keep only the
+  // largest size that fits. Open: also keep the layouts one module shorter, as
+  // lower-ranked alternatives (size always ranks first).
+  let best = 0;
+  const floor = () => (open ? best - 1 : best);
+  for (const minRatio of open ? [0.999] : [0.999, 0.5]) {
+    for (let count = target + 1; count >= MIN_MODULES; count--) {
+      if (best > 0 && count < floor()) break;
       const seen = new Set<string>();
       for (const run of enumerateRuns(room, count, opts)) {
         if (run.clearanceRatio < minRatio) continue;
-        const sig = signature(run);
+        const usable = usableModules(run);
+        if (usable > target) continue;
+        const sig = open ? footprintSignature(run) : signature(run);
         if (seen.has(sig)) continue;
         seen.add(sig);
-        const assignment = assignAppliances(run.modules);
+        const assignment = run.galley
+          ? assignGalley(run.modules, run.galley.split)
+          : assignAppliances(run.modules);
         if (!assignment) continue;
-        const score =
-          assignment.score
-          + 1.2 * count                              // more counter is better
-          - 2.0 * (target - count)                   // …but falling short of the target hurts
-          + (run.corner ? 0.5 : 0)                   // an L works better than one long wall
-          + 3.0 * run.clearanceRatio;
+        const score = open
+          ? assignment.score
+            + 1.2 * usable
+            - 2.0 * (target - usable)
+            + openKitchenBonus(run, room, outward)
+          : assignment.score
+            + 1.2 * usable                             // more counter is better
+            - 2.0 * (target - usable)                  // …but falling short of the target hurts
+            + (run.corner ? 0.5 : 0)                   // an L works better than one long wall
+            + 3.0 * run.clearanceRatio;
         scored.push({ run, assignment, score });
+        best = Math.max(best, usable);
       }
     }
     if (scored.length) break;
   }
+  scored = scored.filter((s) => usableModules(s.run) >= floor());
 
-  scored.sort((a, b) => b.score - a.score);
+  // Open kitchen short of its target inside its own walls: try runs with one
+  // leg continuing past the opening (worktop extension). Kept only when they
+  // reach more usable modules than the best in-kitchen run, so an in-kitchen
+  // run of equal size always wins; the best and one-shorter sizes are kept,
+  // ranked above the in-kitchen runs by size like everything else.
+  const bestIn = best;
+  if (open && bestIn < target && room.extendInto?.length) {
+    const ext: ScoredRun[] = [];
+    let bestExt = 0;
+    const seen = new Set<string>();
+    for (let count = target + 1; count > bestIn; count--) {
+      if (bestExt > 0 && count < bestExt - 1) break;
+      for (const run of enumerateExtendedRuns(room, count, opts)) {
+        if (run.clearanceRatio < 0.999) continue;
+        const usable = usableModules(run);
+        if (usable > target || usable <= bestIn) continue;
+        const sig = footprintSignature(run);
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        const assignment = assignAppliances(run.modules);
+        if (!assignment) continue;
+        const extCount = run.modules.reduce((k, m) => k + (m.ext ? 1 : 0), 0);
+        const score = assignment.score
+          + 1.2 * usable
+          - 2.0 * (target - usable)
+          + openKitchenBonus(run, room, outward)
+          - EXT_COST * extCount
+          + EXT_WALL_BONUS * Math.min(run.extension?.wall ?? 0, EXT_WALL_CAP);
+        ext.push({ run, assignment, score });
+        bestExt = Math.max(bestExt, usable);
+      }
+    }
+    scored.push(...ext.filter((s) => usableModules(s.run) >= bestExt - 1));
+  }
+
+  if (open) {
+    scored.sort((a, b) => usableModules(b.run) - usableModules(a.run) || b.score - a.score);
+    scored = dropNudgedRuns(scored);
+  } else {
+    scored.sort((a, b) => b.score - a.score);
+  }
   scored = scored.slice(0, maxOptions);
 
   return scored.map(({ run, assignment }) => {
@@ -527,7 +1204,7 @@ export function getFlexibleKitchenPlacements(
     );
     const footprint = runOutline(run, MODULE);
     const envelope  = runOutline(run, MODULE + CLEARANCE);
-    const shape = run.corner ? "L" : "straight";
+    const shape = run.galley ? "galley" : run.corner ? "L" : "straight";
     const ends: [Point2D, Point2D] = run.straight
       ? [run.straight.start, run.straight.end]
       : [add(run.corner!.point, mul(run.corner!.aDir, run.corner!.aLen)), run.corner!.point];
@@ -544,6 +1221,14 @@ export function getFlexibleKitchenPlacements(
         wallSegment: ends,
         smallCutout: footprint,
         largeCutout: envelope,
+        ...(open ? {
+          modules: run.modules.map((m) => ({
+            footprint: m.footprint, clearance: m.clearance, ...(m.ext ? { ext: true as const } : {}),
+          })),
+        } : {}),
+        ...(run.extension && room.extendInto?.[run.extension.into] ? {
+          extension: { room: room.extendInto[run.extension.into].index, zones: run.extension.zones },
+        } : {}),
       },
     };
   });

@@ -3,15 +3,24 @@
 // Reads the parsed pipeline definition and runs the full furniture placement
 // chain for a single room:
 //   place piece N → subtract footprint → feed roomRdc into piece N+1
+//
+// One step generator (generateStepOptions) serves every runner — the app's
+// runRoomPipeline / runRoomPipelineAt and the Rhino CLI (runRoomPipelineSteps)
+// — so a rule added there (flexible / open kitchens, the strict clearance
+// filter, the living-room opening filter) holds for every consumer.
 
 import type { Point2D, Room, RoomName } from "../layout/types";
-import type { FurnitureLibrary, Pipeline } from "../library/types";
+import type { FurnitureCategory, FurnitureLibrary, Pipeline } from "../library/types";
 import { defaultLibrary, defaultPipeline } from "../library/loader";
 import { roomNameToCategory, findFurnitureByName } from "../library/lookup";
-import type { PlacementOptions } from "./types";
+import type { PlacementOption } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
-import { placeFurniture, getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
-import { getFlexibleKitchenPlacements } from "./kitchenFlex";
+import { getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
+import { getFlexibleKitchenPlacements, passageOk } from "./kitchenFlex";
+import { backsOntoOpening, polySegDist } from "./openKitchen";
+
+/** A freestanding living-room piece keeps this far (metres) off a kitchen opening. */
+const MOUTH_CLEAR = 0.6;
 import { subtractPolygon } from "./subtraction";
 
 export type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions };
@@ -23,16 +32,16 @@ export interface PipelineOptions {
   /**
    * Build the kitchen from 0.6 m modules laid along the room's own walls
    * (see kitchenFlex.ts) instead of dropping in the library's preset block.
-   * The preset route is used for every other room either way.
+   * The preset route is used for every other room either way. Open kitchens
+   * (Room.openSegments) always use the modular placer, whatever this says.
    */
   flexibleKitchen?: boolean;
-}
-
-/** True when this step is the kitchen counter and the flexible route owns it. */
-function usesFlexibleKitchen(
-  category: string, alternatives: string[], opts?: PipelineOptions,
-): boolean {
-  return !!opts?.flexibleKitchen && category === "Kitchen" && alternatives.includes("Kitchen");
+  /**
+   * Add a warning when the strict clearance filter rejects every option of a
+   * step and the unfiltered options are used instead (the Rhino CLI reports
+   * this; the app stays silent). Only read by runRoomPipelineSteps / ...At.
+   */
+  warnOnStrictFallback?: boolean;
 }
 
 // ─── Freestanding furniture ───────────────────────────────────────────────────
@@ -55,8 +64,7 @@ function roomNameToSection(name: RoomName): string {
 // stop a new piece's *clearance* zone (largeBbox) from engulfing an already
 // placed piece's *footprint* — e.g. a freestanding dining table dropped on top
 // of the sofa. This axis-aligned overlap test lets the pipeline reject those
-// options so the engine never returns an overlapping layout (previously this
-// lived only in the Rhino CLI, so the app — a pure consumer — didn't get it).
+// options so the engine never returns an overlapping layout.
 function aabbOverlap(pts1: Point2D[], pts2: Point2D[]): boolean {
   if (!pts1.length || !pts2.length) return false;
   const xs1 = pts1.map((p) => p[0]), ys1 = pts1.map((p) => p[1]);
@@ -68,6 +76,155 @@ function aabbOverlap(pts1: Point2D[], pts2: Point2D[]): boolean {
     Math.max(...ys1) > Math.min(...ys2) + eps &&
     Math.max(...ys2) > Math.min(...ys1) + eps
   );
+}
+
+// ─── Shared step generator ────────────────────────────────────────────────────
+
+/** Room-level inputs every step of one pipeline run shares. */
+interface RoomContext {
+  room: Room;
+  aptType: number;
+  lib: FurnitureLibrary;
+  category: FurnitureCategory;
+  originalWalls: [Point2D, Point2D][];
+  opts?: PipelineOptions;
+}
+
+/** The polygons and footprints left by the steps placed so far. */
+interface ChainState {
+  roomFullChain: Point2D[];
+  roomRdcChain: Point2D[];
+  placedSmallBboxes: Point2D[][];
+}
+
+interface GeneratedStep {
+  furnitureName: string;
+  /** Every valid option, best first. Empty when the step is skipped. */
+  options: PlacementOption[];
+  warnings: string[];
+}
+
+function makeContext(room: Room, aptType: number, opts?: PipelineOptions): RoomContext {
+  const originalWalls: [Point2D, Point2D][] = room.polygon.map(
+    (a, i) => [a, room.polygon[(i + 1) % room.polygon.length]],
+  );
+  return {
+    room,
+    aptType,
+    lib: opts?.library ?? defaultLibrary,
+    category: roomNameToCategory(room.name),
+    originalWalls,
+    opts,
+  };
+}
+
+function initialChain(room: Room): ChainState {
+  let roomFullChain: Point2D[] = room.polygon;
+  let roomRdcChain: Point2D[] = room.polygon;
+  for (const rect of getDoorRectangles(room)) roomRdcChain = subtractPolygon(roomRdcChain, rect);
+  // Floor a neighbour has claimed (e.g. bar stools) is neither footprint nor
+  // clearance space for this room's furniture.
+  for (const area of room.reserved ?? []) {
+    roomFullChain = subtractPolygon(roomFullChain, area);
+    roomRdcChain  = subtractPolygon(roomRdcChain,  area);
+  }
+  return { roomFullChain, roomRdcChain, placedSmallBboxes: [] };
+}
+
+function applySelection(state: ChainState, selected: PlacementOption): void {
+  state.placedSmallBboxes.push(selected.placed.transformedSmallBbox as Point2D[]);
+  state.roomFullChain = subtractPolygon(state.roomFullChain, selected.placed.smallCutout);
+  state.roomRdcChain  = subtractPolygon(state.roomRdcChain,  selected.placed.largeCutout);
+}
+
+/**
+ * All options for one pipeline step, given what is already placed.
+ *
+ *   • Kitchen step of an open kitchen → modular placer under the open-kitchen
+ *     rules only; when that finds nothing the step has no options (warning).
+ *   • Kitchen step with opts.flexibleKitchen → modular placer.
+ *   • Everything else → library presets. In a living room with an opening,
+ *     wall-backed pieces may not back onto it (kept unfiltered, with a
+ *     warning, rather than lose the piece). With `strict`, options whose
+ *     clearance would engulf a placed footprint are dropped (again falling back
+ *     to the unfiltered list rather than lose the piece).
+ */
+function generateStepOptions(
+  ctx: RoomContext,
+  state: ChainState,
+  alternatives: string[],
+  strict: boolean,
+): GeneratedStep {
+  const { room, aptType, lib, category, opts } = ctx;
+  const warnings: string[] = [];
+  const openSegs = room.openSegments ?? [];
+  const isKitchenStep = category === "Kitchen" && alternatives.includes("Kitchen");
+
+  const openKitchen = !!room.openKitchen || openSegs.length > 0;
+  if (isKitchenStep && (openKitchen || opts?.flexibleKitchen)) {
+    const flex = getFlexibleKitchenPlacements(room, aptType, "Kitchen", {
+      collisionPolygon: state.roomFullChain,
+      edgePolygon:      state.roomRdcChain,
+    });
+    if (flex.length) return { furnitureName: "Kitchen", options: flex, warnings };
+    // Open kitchens never fall back to the library presets (a rigid block that
+    // ignores the opening): no modular layout is an honest "no kitchen".
+    warnings.push(openKitchen
+      ? `Open kitchen: no modular counter of ≥ 4 modules fits on its walls — skipped`
+      : `No valid placement found for "Kitchen" — skipped`);
+    return { furnitureName: "Kitchen", options: [], warnings };
+  }
+
+  let entry = null;
+  let resolvedName = "";
+  for (const name of alternatives) {
+    entry = findFurnitureByName(lib, aptType, category, name);
+    if (entry) { resolvedName = name; break; }
+  }
+  if (!entry) {
+    warnings.push(
+      `No library entry for [${alternatives.join(" | ")}] in ${category} apt ${aptType} — skipped`,
+    );
+    return { furnitureName: alternatives.join(" | "), options: [], warnings };
+  }
+
+  const freestanding = FREESTANDING_FURNITURE.has(resolvedName);
+  let raw = getAllPlacements(room, entry, {
+    referenceWalls:   freestanding ? undefined : ctx.originalWalls,
+    collisionPolygon: state.roomFullChain,
+    edgePolygon:      state.roomRdcChain,
+  });
+
+  // Living room beside an open kitchen: keep the opening open. Nothing
+  // wall-backed backs onto it, a freestanding piece (dining table) keeps
+  // MOUTH_CLEAR off it, and OPEN_PASSAGE of it stays free of footprints
+  // (this piece, the ones placed before it, and reserved bar stools).
+  if (openSegs.length > 0 && !isKitchenStep && raw.length > 0) {
+    const others = [...state.placedSmallBboxes, ...(room.reserved ?? [])];
+    const clear = raw.filter((o) => {
+      const fp = o.placed.transformedSmallBbox as Point2D[];
+      if (!freestanding && backsOntoOpening(o.placed, openSegs)) return false;
+      if (freestanding && openSegs.some(([a, b]) => polySegDist(fp, a, b) < MOUTH_CLEAR)) return false;
+      return passageOk(openSegs, [...others, fp]);
+    });
+    if (clear.length > 0) raw = clear;
+    else warnings.push(`"${resolvedName}": every placement crowds the kitchen opening — using them anyway`);
+  }
+
+  if (raw.length === 0) {
+    warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
+    return { furnitureName: resolvedName, options: [], warnings };
+  }
+  if (!strict) return { furnitureName: resolvedName, options: raw, warnings };
+
+  const strictOptions = raw.filter(
+    (opt) => !state.placedSmallBboxes.some((prev) => aabbOverlap(opt.placed.transformedBbox as Point2D[], prev)),
+  );
+  if (strictOptions.length > 0) return { furnitureName: resolvedName, options: strictOptions, warnings };
+  if (opts?.warnOnStrictFallback) {
+    warnings.push(`"${resolvedName}": all placements interfere with clearance zones — using best available`);
+  }
+  return { furnitureName: resolvedName, options: raw, warnings };
 }
 
 // ─── Pipeline runner ──────────────────────────────────────────────────────────
@@ -84,76 +241,65 @@ export function runRoomPipeline(
   opts?: PipelineOptions,
 ): PipelineResult {
   room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
-  const lib      = opts?.library   ?? defaultLibrary;
-  const pipeline = opts?.pipeline  ?? defaultPipeline;
-  const section  = roomNameToSection(room.name);
-  const steps    = pipeline[section] ?? [];
-  const category = roomNameToCategory(room.name);
-
-  const originalWalls: [Point2D, Point2D][] = [];
-  for (let i = 0; i < room.polygon.length; i++) {
-    const a = room.polygon[i];
-    const b = room.polygon[(i + 1) % room.polygon.length];
-    originalWalls.push([a, b]);
-  }
-
-  let roomFullChain: Point2D[] = room.polygon;
-  const _doorRects = getDoorRectangles(room);
-  let roomRdcChain: Point2D[] = room.polygon;
-  for (const rect of _doorRects) roomRdcChain = subtractPolygon(roomRdcChain, rect);
+  const pipeline = opts?.pipeline ?? defaultPipeline;
+  const steps    = pipeline[roomNameToSection(room.name)] ?? [];
+  const ctx      = makeContext(room, aptType, opts);
+  const state    = initialChain(room);
 
   const placed: PipelineStep[] = [];
   const warnings: string[]     = [];
 
   for (const alternatives of steps) {
-    const placementOptsFor = (name: string): PlacementOptions => ({
-      referenceWalls:   FREESTANDING_FURNITURE.has(name) ? undefined : originalWalls,
-      collisionPolygon: roomFullChain,
-      edgePolygon:      roomRdcChain,
-    });
-
-    if (usesFlexibleKitchen(category, alternatives, opts)) {
-      const flex = getFlexibleKitchenPlacements(room, aptType, "Kitchen", placementOptsFor("Kitchen"));
-      if (!flex.length) {
-        warnings.push(`No valid placement found for "Kitchen" — skipped`);
-        continue;
-      }
-      placed.push({ furnitureName: "Kitchen", placed: flex[0].placed });
-      roomFullChain = subtractPolygon(roomFullChain, flex[0].placed.smallCutout);
-      roomRdcChain  = subtractPolygon(roomRdcChain,  flex[0].placed.largeCutout);
-      continue;
-    }
-
-    let entry = null;
-    let resolvedName = "";
-    for (const name of alternatives) {
-      entry = findFurnitureByName(lib, aptType, category, name);
-      if (entry) { resolvedName = name; break; }
-    }
-
-    if (!entry) {
-      warnings.push(
-        `No library entry for [${alternatives.join(" | ")}] in ${category} apt ${aptType} — skipped`,
-      );
-      continue;
-    }
-
-    const result = placeFurniture(room, entry, placementOptsFor(resolvedName));
-    if (!result) {
-      warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
-      continue;
-    }
-
-    placed.push({ furnitureName: resolvedName, placed: result });
-
-    roomFullChain = subtractPolygon(roomFullChain, result.smallCutout);
-    roomRdcChain  = subtractPolygon(roomRdcChain,  result.largeCutout);
+    const gen = generateStepOptions(ctx, state, alternatives, false);
+    warnings.push(...gen.warnings);
+    if (!gen.options.length) continue;
+    const first = gen.options[0];
+    placed.push({ furnitureName: gen.furnitureName, placed: first.placed });
+    applySelection(state, first);
   }
 
   return { steps: placed, warnings };
 }
 
 // ─── All-options pipeline (interactive exploration) ───────────────────────────
+
+/**
+ * The all-options runner on `room` exactly as given (no polygon
+ * simplification). `selectedIndices[i]` picks one placement for step i;
+ * subsequent steps see the polygon that results from subtracting it.
+ * Shared by runRoomPipelineAt and the Rhino CLI, which normalises polygons
+ * itself and re-runs this many times while ranking options.
+ */
+export function runRoomPipelineSteps(
+  room: Room,
+  aptType: number,
+  selectedIndices: number[],
+  opts?: PipelineOptions,
+): PipelineWithOptions {
+  const pipeline = opts?.pipeline ?? defaultPipeline;
+  const steps    = pipeline[roomNameToSection(room.name)] ?? [];
+  const ctx      = makeContext(room, aptType, opts);
+  const state    = initialChain(room);
+
+  const resultSteps: StepOptions[] = [];
+  const warnings:    string[]      = [];
+
+  for (let i = 0; i < steps.length; i++) {
+    const gen = generateStepOptions(ctx, state, steps[i], true);
+    warnings.push(...gen.warnings);
+    if (gen.options.length === 0) {
+      resultSteps.push({ furnitureName: gen.furnitureName, allOptions: [], selectedIndex: -1, selected: null });
+      continue;
+    }
+    const allOptions    = gen.options;
+    const selectedIndex = Math.min(Math.max(selectedIndices[i] ?? 0, 0), allOptions.length - 1);
+    const selected      = allOptions[selectedIndex];
+    resultSteps.push({ furnitureName: gen.furnitureName, allOptions, selectedIndex, selected });
+    applySelection(state, selected);
+  }
+
+  return { steps: resultSteps, warnings };
+}
 
 /**
  * Run the pipeline exposing every valid placement at every step.
@@ -168,108 +314,5 @@ export function runRoomPipelineAt(
   opts?: PipelineOptions,
 ): PipelineWithOptions {
   room = { ...room, polygon: simplifyPolygon(room.polygon) }; // strip model noise
-  const lib      = opts?.library   ?? defaultLibrary;
-  const pipeline = opts?.pipeline  ?? defaultPipeline;
-  const section  = roomNameToSection(room.name);
-  const steps    = pipeline[section] ?? [];
-  const category = roomNameToCategory(room.name);
-
-  const originalWalls: [Point2D, Point2D][] = [];
-  for (let i = 0; i < room.polygon.length; i++) {
-    const a = room.polygon[i];
-    const b = room.polygon[(i + 1) % room.polygon.length];
-    originalWalls.push([a, b]);
-  }
-
-  let roomFullChain: Point2D[] = room.polygon;
-  const _doorRects = getDoorRectangles(room);
-  let roomRdcChain: Point2D[] = room.polygon;
-  for (const rect of _doorRects) roomRdcChain = subtractPolygon(roomRdcChain, rect);
-
-  const resultSteps: StepOptions[] = [];
-  const warnings:    string[]      = [];
-  const placedSmallBboxes: Point2D[][] = []; // footprints placed so far (strict rule)
-
-  for (let i = 0; i < steps.length; i++) {
-    const alternatives = steps[i];
-
-    // ── Flexible kitchen: options come from the module placer, not the library ──
-    if (usesFlexibleKitchen(category, alternatives, opts)) {
-      const allOptions = getFlexibleKitchenPlacements(room, aptType, "Kitchen", {
-        collisionPolygon: roomFullChain,
-        edgePolygon:      roomRdcChain,
-      });
-      if (allOptions.length === 0) {
-        warnings.push(`No valid placement found for "Kitchen" — skipped`);
-        resultSteps.push({ furnitureName: "Kitchen", allOptions: [], selectedIndex: -1, selected: null });
-        continue;
-      }
-      const idx = Math.min(Math.max(selectedIndices[i] ?? 0, 0), allOptions.length - 1);
-      const selected = allOptions[idx];
-      resultSteps.push({ furnitureName: "Kitchen", allOptions, selectedIndex: idx, selected });
-      placedSmallBboxes.push(selected.placed.transformedSmallBbox as Point2D[]);
-      roomFullChain = subtractPolygon(roomFullChain, selected.placed.smallCutout);
-      roomRdcChain  = subtractPolygon(roomRdcChain,  selected.placed.largeCutout);
-      continue;
-    }
-
-    let entry = null;
-    let resolvedName = "";
-    for (const name of alternatives) {
-      entry = findFurnitureByName(lib, aptType, category, name);
-      if (entry) { resolvedName = name; break; }
-    }
-
-    if (!entry) {
-      warnings.push(
-        `No library entry for [${alternatives.join(" | ")}] in ${category} apt ${aptType} — skipped`,
-      );
-      resultSteps.push({
-        furnitureName: alternatives.join(" | "),
-        allOptions:    [],
-        selectedIndex: -1,
-        selected:      null,
-      });
-      continue;
-    }
-
-    const placementOpts: PlacementOptions = {
-      referenceWalls:   FREESTANDING_FURNITURE.has(resolvedName) ? undefined : originalWalls,
-      collisionPolygon: roomFullChain,
-      edgePolygon:      roomRdcChain,
-    };
-
-    const rawOptions = getAllPlacements(room, entry, placementOpts);
-
-    // Strict clearance: drop options whose clearance zone would engulf an
-    // already-placed footprint (fall back to raw only if that leaves nothing,
-    // so a piece is never silently lost to the filter).
-    const strict = rawOptions.filter(
-      (opt) => !placedSmallBboxes.some((prev) => aabbOverlap(opt.placed.transformedBbox as Point2D[], prev)),
-    );
-    const allOptions = strict.length > 0 ? strict : rawOptions;
-
-    if (allOptions.length === 0) {
-      warnings.push(`No valid placement found for "${resolvedName}" — skipped`);
-      resultSteps.push({
-        furnitureName: resolvedName,
-        allOptions:    [],
-        selectedIndex: -1,
-        selected:      null,
-      });
-      continue;
-    }
-
-    const raw = selectedIndices[i] ?? 0;
-    const selectedIndex = Math.min(Math.max(raw, 0), allOptions.length - 1);
-    const selected = allOptions[selectedIndex];
-
-    resultSteps.push({ furnitureName: resolvedName, allOptions, selectedIndex, selected });
-
-    placedSmallBboxes.push(selected.placed.transformedSmallBbox as Point2D[]);
-    roomFullChain = subtractPolygon(roomFullChain, selected.placed.smallCutout);
-    roomRdcChain  = subtractPolygon(roomRdcChain,  selected.placed.largeCutout);
-  }
-
-  return { steps: resultSteps, warnings };
+  return runRoomPipelineSteps(room, aptType, selectedIndices, opts);
 }
