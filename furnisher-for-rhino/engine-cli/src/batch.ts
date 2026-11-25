@@ -14,11 +14,13 @@ console.info = () => {};
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { processRequest, RoomInput } from "./core";
+import { processRequest } from "./core";
+import type { RoomInput } from "./core";
 
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
-type BatchRoomInput = RoomInput & { area?: number; subtype?: string };
+// `subtype` / `open` (open-kitchen detection) travel inside RoomInput.
+type BatchRoomInput = RoomInput & { area?: number };
 
 interface BatchRequest {
   id: string;
@@ -26,6 +28,7 @@ interface BatchRequest {
   rooms: BatchRoomInput[];
   doors?: [number, number][];
   aptType?: number;
+  flexibleKitchen?: boolean;
 }
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
@@ -102,7 +105,9 @@ function perturbJitter(p: Pt): Pt {
   return [p[0] + 0.0007, p[1] - 0.0007];
 }
 
-/** Apply a point transform to every coordinate of the request (polygons, windows, doors). */
+/** Apply a point transform to every coordinate of the request (polygons, windows, doors).
+ *  Room flags (name, subtype, open) and request flags are carried over unchanged;
+ *  open-kitchen segments are re-detected from the perturbed polygons. */
 function perturbRequest(req: BatchRequest, f: (p: Pt) => Pt) {
   return {
     rooms: req.rooms.map(r => ({
@@ -112,6 +117,7 @@ function perturbRequest(req: BatchRequest, f: (p: Pt) => Pt) {
     })),
     doors: req.doors?.map(d => f(d)),
     aptType: req.aptType,
+    flexibleKitchen: req.flexibleKitchen,
   };
 }
 
@@ -167,19 +173,39 @@ async function main() {
 
       // Attempt 0: original request. aptType only depends on room names, so
       // the value from attempt 0 stays valid across retries.
-      const res0 = processRequest({ rooms: req.rooms, doors: req.doors, aptType: req.aptType });
+      const res0 = processRequest({
+        rooms: req.rooms, doors: req.doors, aptType: req.aptType, flexibleKitchen: req.flexibleKitchen,
+      });
 
       // Retry ladder: on per-room errors, re-run the whole request with small
       // perturbations and keep, per room, the first attempt that succeeded.
+      // An open kitchen and the living room(s) across its opening depend on
+      // each other (bar stools reserved in the living room), so they form one
+      // group: if any member failed, the whole group is taken from the first
+      // retry in which every member succeeded.
       const merged = res0.rooms.map(room => ({ room, recovered: 0 }));
+      const groupOf = res0.rooms.map((_, i) => {
+        const g = new Set<number>([i]);
+        for (let grew = true; grew;) {
+          grew = false;
+          for (const j of [...g]) {
+            for (const k of res0.rooms[j].openRooms ?? []) if (!g.has(k)) { g.add(k); grew = true; }
+          }
+        }
+        return [...g].sort((a, b) => a - b);
+      });
       for (let attempt = 1; attempt <= RETRY_PERTURBATIONS.length; attempt++) {
         if (!merged.some(m => m.room.error)) break;
         try {
           const resA = processRequest(perturbRequest(req, RETRY_PERTURBATIONS[attempt - 1]));
-          resA.rooms.forEach((room, i) => {
-            if (merged[i].room.error && !room.error) {
-              merged[i] = { room, recovered: attempt };
-            }
+          const done = new Set<number>();
+          resA.rooms.forEach((_, i) => {
+            if (done.has(i)) return;
+            const g = groupOf[i];
+            g.forEach(j => done.add(j));
+            if (!g.some(j => merged[j].room.error)) return;
+            if (g.some(j => resA.rooms[j]?.error)) return;
+            for (const j of g) merged[j] = { room: resA.rooms[j], recovered: attempt };
           });
         } catch {
           // A retry attempt failing wholesale just means no rescue this round.
@@ -206,6 +232,7 @@ async function main() {
           warnings: room.warnings,
           ...(room.error ? { error: room.error } : {}),
           ...(recovered ? { recovered } : {}),
+          ...(room.openKitchen ? { openKitchen: true } : {}),
           stepScores: room.stepScores,
           steps: room.steps.map(s => ({
             furnitureName: s.furnitureName,
@@ -217,6 +244,9 @@ async function main() {
               : {}),
           })),
           ...(geometry ? { doors: room.doors } : {}),
+          ...(geometry && room.openSegments ? { openSegments: room.openSegments } : {}),
+          // With --geometry the full bar; otherwise just whether there is one.
+          ...(room.bar ? { bar: geometry ? room.bar : true } : {}),
         };
       });
 

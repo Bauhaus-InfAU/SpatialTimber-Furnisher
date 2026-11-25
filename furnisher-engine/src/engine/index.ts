@@ -1,8 +1,14 @@
 export type { PlacedFurniture, PlacementOption, PlacementOptions, PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
 export { getAllPlacements, placeFurniture, placeVariantAtCorner, getDoorRectangles, doorWidth, simplifyPolygon } from "./placer";
 export { subtractPolygon, subtractPolygonAll, subtractPlacement } from "./subtraction";
-export { runRoomPipeline, runRoomPipelineAt } from "./pipeline";
+export { runRoomPipeline, runRoomPipelineAt, runRoomPipelineSteps } from "./pipeline";
+export { detectOpenKitchens, openKitchenHint, isOpenKitchenName, sharedBoundary, projectOntoBoundary, backsOntoOpening, splitPassages, freePassage, OPEN_TOUCH_TOL, OPEN_MIN_SHARED, OPEN_GAP_TOL } from "./openKitchen";
+export { planKitchenBars } from "./kitchenBar";
+export type { BarPlan } from "./kitchenBar";
+export type { OpenSegment, OpenKitchenRoom, OpenKitchenResult } from "./openKitchen";
 export type { PipelineOptions } from "./pipeline";
 export { getFlexibleKitchenPlacements, kitchenModuleCount, MODULE as KITCHEN_MODULE, CLEARANCE as KITCHEN_CLEARANCE } from "./kitchenFlex";
 export type { RoomScore, StepScore } from "./scorer";
 export { scoreRoom } from "./scorer";
+export { furnishApartment } from "./apartment";
+export type { ApartmentRequest, ApartmentResult, ApartmentDetail, FurnishApartmentOptions, RoomInput, RoomOut, StepOut, StepScoreOut, DoorOut, VariantGroup } from "./apartment";

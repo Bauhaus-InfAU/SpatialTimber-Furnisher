@@ -11,7 +11,8 @@ console.log = () => {};
 console.debug = () => {};
 console.info = () => {};
 
-import { processRequest, Request } from "./core";
+import { processRequest } from "./core";
+import type { Request } from "./core";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
