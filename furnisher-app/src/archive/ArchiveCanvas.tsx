@@ -133,8 +133,6 @@ export function ArchiveCanvas({ state, show }: { state: ArchiveState; show: Arch
             )))}
           {res && show.openings &&
             res.rooms.map((rm, i) => rm.bar ? <path key={`z${i}`} d={path(rm.bar.stoolZone as XY[])} className="arch-stoolzone" /> : null)}
-          {res && show.openings &&
-            res.rooms.flatMap((rm, i) => (rm.extension?.zones ?? []).map((z, j) => <path key={`e${i}-${j}`} d={path(z as XY[])} className="arch-stoolzone" />))}
 
           {/* furniture */}
           {res && show.furniture && (

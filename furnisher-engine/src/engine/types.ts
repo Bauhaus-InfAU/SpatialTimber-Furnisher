@@ -20,14 +20,7 @@ export interface PlacedFurniture {
    * front of it (empty for an L's blind corner). Lets later checks (the open-
    * kitchen bar) test against the real counter rather than its outline.
    */
-  modules?: { footprint: Point2D[]; clearance: Point2D[]; ext?: true }[];
-  /**
-   * Open kitchens only: the counter continues past the opening along a wall
-   * of the living room (plain worktop, see kitchenFlex.ts). `room` is the
-   * caller's index of that living room (Room.extendInto); `zones` are the
-   * extension modules' footprints and work zones, to reserve there.
-   */
-  extension?: { room: number; zones: Point2D[][] };
+  modules?: { footprint: Point2D[]; clearance: Point2D[] }[];
 }
 
 export interface PlacementOption {

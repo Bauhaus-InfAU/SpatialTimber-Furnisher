@@ -18,8 +18,7 @@
 //     and no overlap with any module's work zone;
 //   • the opening keeps OPEN_PASSAGE free (counter and bar both count);
 //   • the stool zone (bar length × STOOL_ZONE deep, across the opening) lies
-//     wholly in one living room, clear of that room's door swings and of floor
-//     already reserved there (the counter's worktop extension).
+//     wholly in one living room, clear of that room's door swings.
 
 import type { Point2D, Room } from "../layout/types";
 import type { PlacedFurniture } from "./types";
@@ -111,8 +110,6 @@ export function planKitchenBars(
         const living = livings.find((l) => insetInside(zone, l.room.polygon));
         if (!living) continue;
         if ((doorRects.get(living.index) ?? []).some((r) => convexOverlap(r, zone))) continue;
-        // Floor already reserved there (a worktop extension of the counter).
-        if ((living.room.reserved ?? []).some((r) => convexOverlap(r, zone))) continue;
 
         const n = len >= 1.8 - 1e-9 ? 3 : 2;
         const stools: Point2D[][] = [];

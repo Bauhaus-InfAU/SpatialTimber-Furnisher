@@ -245,7 +245,7 @@ export function ArchiveTab({
                         const sub = rq.subtype && rq.subtype !== rq.name ? ` (${rq.subtype})` : "";
                         return (
                           <tr key={i} className={sel === i ? "sel" : ""} onClick={() => state.setSelectedRoom(sel === i ? null : i)}>
-                            <td>{ch} · {rm.name}{sub}{rm.openKitchen ? " ◐" : ""}{rm.bar ? " +bar" : ""}{rm.extension ? " +worktop" : ""}</td>
+                            <td>{ch} · {rm.name}{sub}{rm.openKitchen ? " ◐" : ""}{rm.bar ? " +bar" : ""}</td>
                             <td className="mono">{fmt(rq.area, 1)}</td>
                             <td className="mono">{rm.error ? "err" : fmt(rm.score)}</td>
                             <td className="mono">{fmt(st?.score)}</td>

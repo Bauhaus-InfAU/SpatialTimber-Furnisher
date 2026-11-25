@@ -71,14 +71,6 @@ export interface Room {
    * Subtracted from the room before its first piece is placed.
    */
   reserved?: Point2D[][];
-  /**
-   * Open kitchens only: the living rooms across the opening, with the
-   * caller's index for each. When the counter inside the kitchen falls short
-   * of its worktop target, a leg may continue past the opening along a living-
-   * room wall that carries on the kitchen wall (kitchenFlex.ts). The caller
-   * must then reserve `PlacedFurniture.extension.zones` in that room.
-   */
-  extendInto?: { index: number; room: Room }[];
 }
 
 /** Full output of one generateApartment() call. */

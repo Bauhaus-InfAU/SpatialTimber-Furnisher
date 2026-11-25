@@ -15,14 +15,12 @@
 //     fallbacks.json (never for a modular kitchen step); scored by
 //     scoreFurnishedRoom (penalty points, optional steps, overlaps); the
 //     caller's selections replayed with downstream re-runs;
-//   - kitchens first; an open kitchen's counter may continue past the opening
-//     as plain worktop (kitchenFlex.ts), its floor reserved in the living room
-//     (kept only if the living room loses nothing, else the kitchen is redone
-//     without it); then the optional bar with stools reserved in the living
-//     room across the opening (same rule);
+//   - open kitchens: the counter stays inside the kitchen (kitchenFlex.ts);
+//     then the optional bar with stools reserved in the living room across
+//     the opening (dropped if the living room loses by it);
 //   - per-room error isolation: a failing room comes back with score null;
 //   - the apartment's score and "every room furnished" (summarizeApartment),
-//     after the bar and the extension.
+//     after the bar.
 // All geometry is in metres. Moved here from the CLI's core.ts.
 //
 // NOTE: the engine emits many `[placer] ...` debug lines via console.log at
@@ -164,10 +162,6 @@ export interface RoomOut {
   /** Present on an open kitchen that got a bar (also drawn into the Kitchen
    *  step's geometry). The stool zone is reserved out of the living room. */
   bar?: { footprint: Point2D[]; stools: Point2D[][]; stoolZone: Point2D[]; livingRoom: number };
-  /** Present on an open kitchen whose counter continues past the opening into
-   *  a living room (drawn with the Kitchen step). `zones` (footprint and work
-   *  zone of the worktop past the opening) are reserved out of that room. */
-  extension?: { zones: Point2D[][]; livingRoom: number };
 }
 
 // ─── Polygon helpers ──────────────────────────────────────────────────────────
@@ -444,15 +438,9 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     ...(opts.fallbacks !== undefined ? { fallbacks: opts.fallbacks } : {}),
   };
 
-  // An open kitchen sees the living rooms across its opening (Room.extendInto)
-  // so a short counter may continue into one as plain worktop; `noExtend`
-  // turns that off (the fallback when the living room loses by it).
-  const engineRoomOf = (roomIdx: number, reserved?: Point2D[][], noExtend = false): Room => {
+  const engineRoomOf = (roomIdx: number, reserved?: Point2D[][]): Room => {
     const er = engineRooms[roomIdx];
     const open = openInfo[roomIdx];
-    const extendInto = !noExtend && er.name === "Kitchen" && open.openKitchen && open.openSegments.length
-      ? open.openRooms.map((li) => ({ index: li, room: engineRoomOf(li) }))
-      : [];
     return {
       name: er.name,
       polygon: er.polygon,
@@ -461,15 +449,14 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
       ...(open.openSegments.length ? { openSegments: open.openSegments } : {}),
       ...(open.openKitchen ? { openKitchen: true } : {}),
       ...(reserved?.length ? { reserved } : {}),
-      ...(extendInto.length ? { extendInto } : {}),
     };
   };
 
   type Computed = { out: RoomOut; result: PipelineWithOptions; room: Room; fallback: RoomFallback | null; options: FurnishOptions };
 
-  const computeRoom = (er: (typeof engineRooms)[number], roomIdx: number, reserved?: Point2D[][], noExtend = false): Computed => {
+  const computeRoom = (er: (typeof engineRooms)[number], roomIdx: number, reserved?: Point2D[][]): Computed => {
     const open = openInfo[roomIdx];
-    const room = engineRoomOf(roomIdx, reserved, noExtend);
+    const room = engineRoomOf(roomIdx, reserved);
 
     const rawSel = req.selections?.[roomIdx] ?? [];
     const hasUserSel = rawSel.some(v => v !== 0);
@@ -641,20 +628,13 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
     }
   });
 
-  // ── Open kitchens, after every room is furnished: the worktop extension and
-  //    the bar, both reserving floor in the living room across the opening.
+  // ── Open kitchens, after every room is furnished: the bar, reserving floor
+  //    in the living room across the opening.
   //
   //    Bar: its stool zone is reserved and the living room re-furnished; a bar
-  //    that costs the living room a step or any score is dropped (the kitchen
-  //    keeps its counter either way). tryBar works on the given rooms and
-  //    returns the outcome without committing it.
-  //
-  //    Worktop extension: a kitchen whose chosen counter runs on past the
-  //    opening (PlacedFurniture.extension) is weighed against the same kitchen
-  //    furnished without extensions — each with the living room re-furnished
-  //    around it (extension floor reserved) and then its best bar. The
-  //    extension is kept only if the living room ends up with no step lost and
-  //    no less score than without it; otherwise the kitchen is redone without.
+  //    that costs the living room a step or any score (or its "furnished") is
+  //    dropped (the kitchen keeps its counter either way). tryBar works on the
+  //    given rooms and returns the outcome without committing it.
   type BarOutcome = { li: number; living: Computed; plan: ReturnType<typeof planKitchenBars>[number] };
   // A step that had a place and has none now, or a room that counted as
   // furnished and does not now (e.g. pieces overlapping).
@@ -695,62 +675,6 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
   engineRooms.forEach((_er, ki) => {
     const kc = computed[ki];
     if (!kc || !openInfo[ki].openKitchen) return;
-    const ext = kc.result.steps[0]?.selected?.placed.extension;
-
-    if (ext) {
-      const li = ext.room;
-      const base = computed[li];
-      // With the extension: living room around it, then its bar.
-      let withExt: { living: Computed; bar: BarOutcome | null } | null = null;
-      if (base) {
-        try {
-          const living = computeRoom(engineRooms[li], li, [...(base.room.reserved ?? []), ...ext.zones]);
-          const rooms = [...computed];
-          rooms[li] = living;
-          let bar: BarOutcome | null = null;
-          try { bar = tryBar(ki, kc, rooms); } catch { bar = null; }
-          withExt = { living, bar };
-        } catch {
-          withExt = null;
-        }
-      }
-      // Without: the kitchen redone without extensions, then its bar.
-      let plain: Computed | null = null;
-      let plainErr: unknown = null;
-      try {
-        plain = computeRoom(engineRooms[ki], ki, undefined, true);
-      } catch (err) {
-        plainErr = err;
-      }
-      let plainBar: BarOutcome | null = null;
-      if (plain) {
-        try { plainBar = tryBar(ki, plain, computed); } catch { plainBar = null; }
-      }
-      const livingOf = (o: { living: Computed; bar: BarOutcome | null }) =>
-        o.bar && o.bar.li === li ? o.bar.living : o.living;
-      const finalWith = withExt ? livingOf(withExt) : null;
-      const finalPlain = base ? (plainBar && plainBar.li === li ? plainBar.living : base) : null;
-      const keep = !!withExt && !!finalWith && (!plain || !finalPlain
-        || (!lostAny(finalPlain, finalWith) && (finalWith.out.score ?? 0) >= (finalPlain.out.score ?? 0)));
-      if (keep && withExt) {
-        computed[li] = withExt.living;
-        roomsOut[li] = withExt.living.out;
-        roomsOut[ki].extension = { zones: ext.zones, livingRoom: li };
-        if (withExt.bar) commitBar(ki, withExt.bar);
-        return;
-      }
-      if (!plain) {
-        computed[ki] = null;
-        roomsOut[ki] = failed(engineRooms[ki], ki, plainErr);
-        return;
-      }
-      plain.out.warnings.push("Open kitchen: worktop extension into the living room dropped (the living room would lose by it)");
-      computed[ki] = plain;
-      roomsOut[ki] = plain.out;
-      if (plainBar) commitBar(ki, plainBar);
-      return;
-    }
-
     try {
       const bar = tryBar(ki, kc, computed);
       if (bar) commitBar(ki, bar);
