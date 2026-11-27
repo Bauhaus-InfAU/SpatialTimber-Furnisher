@@ -130,6 +130,29 @@ FALLBACKS = [
     ([2, 3, 4], "Bedroom", "Bed", "Bed160",
      {0: u([0, 0.85, 2.85, 3.7], [0, 0.6, 2.2, 2.8]), 1: u([0, 0.8, 2.8, 2.9], [0, 0.6, 2.2, 2.3])},
      "double bed 1.60 m wide with 0.60 m beside it instead of 2.00 m with 0.80 m"),
+    # Compact Swiss bathroom (2026-11-27, Bauhaus-Universität Weimar, Grundrisssammlung): measured on the fixtures of
+    # 5,150 bathrooms under 4 m² in Swiss Dwellings v3.0.0 (doi:10.5281/zenodo.7788422). Bathtub median 1.64 x 0.70 m
+    # (p10 length 1.50), shower median 0.84 x 0.81 (p10 0.74), free depth in front of WC p10 0.62 m and basin p10 0.73 m
+    # (kept as before), free space beside the WC p25 0.10 / 0.18 m and beside the basin p25 0.03 / 0.15 m.
+    # Source type in brackets: (destination type, source type) where the library has no piece of that type.
+    ([1, 2, 3, 4], "Bathroom", "Toilet", "ToiletCH",
+     {"all": u([0, 0.25, 0.65, 0.9], [0, 0.15, 0.55, 0.7])},
+     "WC with 0.15 m free beside it (free area 0.70 m wide instead of 0.90 m), as in compact Swiss bathrooms"),
+    ([1, 2, 3, 4], "Bathroom", "Sinc", "SincCH",
+     {"all": lambda v: w([0, 0.44, 1.15], [0, 0.44, 1.12])(u([0, 0.2, 0.7, 0.9], [0, 0.08, 0.58, 0.66])(v))},
+     "washbasin with 0.08 m free beside it and 0.68 m in front (free area 0.66 x 1.12 m instead of 0.90 x 1.15 m)"),
+    ([3, 4], "Bathroom", "Bathtube", "BathtubeCH",
+     {"all": lambda v: w([0, 0.75, 0.9], [0, 0.7, 0.85])(u([0, 1.7], [0, 1.5])(v))},
+     "bathtub 1.50 x 0.70 m instead of 1.70 x 0.75 m"),
+    ([1, 2, (3, 2), (4, 2)], "Bathroom", "Shower", "ShowerCH",
+     {"all": lambda v: w([0, 0.9, 1.275], [0, 0.8, 1.15])(u([0, 0.9], [0, 0.8])(v))},
+     "shower 0.80 x 0.80 m instead of 0.90 x 0.90 m"),
+    ([4], "WC", "Toilet", "ToiletCH",
+     {"all": u([0, 0.25, 0.65, 0.9], [0, 0.15, 0.55, 0.7])},
+     "WC with 0.15 m free beside it (free area 0.70 m wide instead of 0.90 m)"),
+    ([4], "WC", "Sinc", "SincCH",
+     {"all": lambda v: w([0, 0.44, 1.15], [0, 0.44, 1.12])(u([0, 0.2, 0.7, 0.9], [0, 0.08, 0.58, 0.66])(v))},
+     "washbasin with 0.08 m free beside it and 0.68 m in front"),
 ]
 
 
@@ -137,11 +160,15 @@ def main():
     written = []
     for types, cat, src, new, edits, desc in FALLBACKS:
         for t in types:
-            path = os.path.join(JSONS_DIR, f"{t}_{cat}_{src}.json")
+            t, ts = t if isinstance(t, tuple) else (t, t)
+            path = os.path.join(JSONS_DIR, f"{ts}_{cat}_{src}.json")
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-            assert data["furnitureName"] == src and data["category"] == cat and data["apartmentType"] == t, path
+            assert data["furnitureName"] == src and data["category"] == cat and data["apartmentType"] == ts, path
             out = copy.deepcopy(data)
+            out["apartmentType"] = t
+            for piece in out["pieces"]:
+                piece["apartmentType"] = t
             out["furnitureName"] = new
             out["fallbackOf"] = src
             out["description"] = desc

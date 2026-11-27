@@ -6,7 +6,9 @@
     {
       "id": "no-dining-table",
       "room": "Living room",
-      "aptTypes": [1],
+      "aptTypes": [
+        1
+      ],
       "furniture": "Dining",
       "label": "no dining table"
     }
@@ -15,50 +17,141 @@
     {
       "id": "bathtub-160",
       "room": "Bathroom",
-      "aptTypes": [1, 2, 3, 4],
-      "replace": { "Bathtube": "Bathtube160", "Sinc": "Sinc112" },
+      "aptTypes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "replace": {
+        "Bathtube": "Bathtube160",
+        "Sinc": "Sinc112"
+      },
       "label": "bathtub 1.60 m and washbasin free area 1.12 m deep (instead of 1.70 m and 1.15 m)"
+    },
+    {
+      "id": "bath-compact-ch",
+      "room": "Bathroom",
+      "aptTypes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "replace": {
+        "Bathtube": "BathtubeCH",
+        "Shower": "ShowerCH",
+        "Toilet": "ToiletCH",
+        "Sinc": "SincCH"
+      },
+      "label": "compact Swiss bathroom: bathtub 1.50 x 0.70 m or shower 0.80 x 0.80 m, WC and washbasin with less free space beside them (measured in Swiss Dwellings, 2026-11-27)"
+    },
+    {
+      "id": "bath-compact-ch-shower",
+      "room": "Bathroom",
+      "aptTypes": [
+        3,
+        4
+      ],
+      "replace": {
+        "Bathtube": "ShowerCH",
+        "Toilet": "ToiletCH",
+        "Sinc": "SincCH"
+      },
+      "label": "compact Swiss bathroom with a shower 0.80 x 0.80 m instead of the bathtub"
+    },
+    {
+      "id": "wc-compact-ch",
+      "room": "WC",
+      "aptTypes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "replace": {
+        "Toilet": "ToiletCH",
+        "Sinc": "SincCH"
+      },
+      "label": "compact WC: WC and washbasin with less free space beside them (Swiss Dwellings, 2026-11-27)"
     },
     {
       "id": "children-bed-end-80",
       "room": "Children",
-      "aptTypes": [1, 2, 3, 4],
-      "replace": { "Bed": "Bed295" },
+      "aptTypes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "replace": {
+        "Bed": "Bed295"
+      },
       "label": "children's bed with a free strip of 0.80 m at its end (instead of 0.85 m)"
     },
     {
       "id": "kitchen-220",
       "room": "Kitchen",
-      "aptTypes": [1],
-      "replace": { "Kitchen": "Kitchen220" },
+      "aptTypes": [
+        1
+      ],
+      "replace": {
+        "Kitchen": "Kitchen220"
+      },
       "label": "kitchen counter 2.20 m (instead of 2.40 m)"
     },
     {
       "id": "kitchen-L-230",
       "room": "Kitchen",
-      "aptTypes": [2, 3],
-      "replace": { "Kitchen": "Kitchen230" },
+      "aptTypes": [
+        2,
+        3
+      ],
+      "replace": {
+        "Kitchen": "Kitchen230"
+      },
       "label": "L kitchen with a long leg of 2.30 m (instead of 2.40 m)"
     },
     {
       "id": "kitchen-of-3-rooms",
       "room": "Kitchen",
-      "aptTypes": [4],
-      "replace": { "Kitchen": { "name": "Kitchen", "aptType": 3 } },
+      "aptTypes": [
+        4
+      ],
+      "replace": {
+        "Kitchen": {
+          "name": "Kitchen",
+          "aptType": 3
+        }
+      },
       "label": "kitchen of a 3-room apartment: L of 2.40 + 1.80 m or a 3.60 m line (instead of 2.45 + 3.05 m or 4.80 m)"
     },
     {
       "id": "kitchen-of-3-rooms-L-230",
       "room": "Kitchen",
-      "aptTypes": [4],
-      "replace": { "Kitchen": { "name": "Kitchen230", "aptType": 3 } },
+      "aptTypes": [
+        4
+      ],
+      "replace": {
+        "Kitchen": {
+          "name": "Kitchen230",
+          "aptType": 3
+        }
+      },
       "label": "kitchen of a 3-room apartment with a long leg of 2.30 m: L of 2.30 + 1.80 m or a 3.60 m line"
     },
     {
       "id": "double-bed-160",
       "room": "Bedroom",
-      "aptTypes": [1, 2, 3, 4],
-      "replace": { "Bed": "Bed160" },
+      "aptTypes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "replace": {
+        "Bed": "Bed160"
+      },
       "label": "double bed 1.60 m wide with 0.60 m beside it (instead of 2.00 m with 0.80 m)"
     }
   ]
