@@ -41,6 +41,12 @@ export interface Room {
    */
   doors?:   Point2D[];
   /**
+   * The door zone is the quarter circle the leaf actually sweeps (hinge at the jamb nearer a room corner)
+   * instead of the full dw x dw square. Pieces still keep out of it; the corner opposite the hinge is free.
+   * Set from the request's `doorSwingArc` (2026-11-27, compact Swiss bathrooms).
+   */
+  doorArc?: boolean;
+  /**
    * Center points of windows on walls.
    * Used to exclude wall segments from wardrobe placement only.
    */

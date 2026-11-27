@@ -15,7 +15,7 @@ import { defaultLibrary, defaultPipeline } from "../library/loader";
 import { roomNameToCategory, resolvePipelineStep } from "../library/lookup";
 import type { PlacementOption } from "./types";
 import type { PipelineStep, PipelineResult, StepOptions, PipelineWithOptions } from "./types";
-import { getAllPlacements, getDoorRectangles, simplifyPolygon } from "./placer";
+import { getAllPlacements, getDoorZones, simplifyPolygon } from "./placer";
 import { getFlexibleKitchenPlacements, passageOk } from "./kitchenFlex";
 import { backsOntoOpening, polySegDist } from "./openKitchen";
 
@@ -139,7 +139,7 @@ function makeContext(room: Room, aptType: number, opts?: PipelineOptions): RoomC
 function initialChain(room: Room): ChainState {
   let roomFullChain: Point2D[] = room.polygon;
   let roomRdcChain: Point2D[] = room.polygon;
-  for (const rect of getDoorRectangles(room)) roomRdcChain = subtractPolygon(roomRdcChain, rect);
+  for (const rect of getDoorZones(room)) roomRdcChain = subtractPolygon(roomRdcChain, rect);
   // Floor a neighbour has claimed (e.g. bar stools) is neither footprint nor
   // clearance space for this room's furniture.
   for (const area of room.reserved ?? []) {

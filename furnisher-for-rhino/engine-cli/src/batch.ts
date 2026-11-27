@@ -30,6 +30,7 @@ interface BatchRequest {
   doors?: [number, number][];
   aptType?: number;
   flexibleKitchen?: boolean;
+  doorSwingArc?: boolean;
 }
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ function perturbRequest(req: BatchRequest, f: (p: Pt) => Pt) {
     })),
     doors: req.doors?.map(d => f(d)),
     aptType: req.aptType,
-    flexibleKitchen: req.flexibleKitchen,
+    flexibleKitchen: req.flexibleKitchen, doorSwingArc: req.doorSwingArc,
   };
 }
 
@@ -175,7 +176,7 @@ async function main() {
       // Attempt 0: original request. aptType only depends on room names, so
       // the value from attempt 0 stays valid across retries.
       const res0 = processRequest({
-        rooms: req.rooms, doors: req.doors, aptType: req.aptType, flexibleKitchen: req.flexibleKitchen,
+        rooms: req.rooms, doors: req.doors, aptType: req.aptType, flexibleKitchen: req.flexibleKitchen, doorSwingArc: req.doorSwingArc,
       });
 
       // Retry ladder: on per-room errors, re-run the whole request with small

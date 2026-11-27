@@ -74,6 +74,11 @@ export interface ApartmentRequest {
    * false: points are used as sent (the composer's zero-thickness rooms).
    */
   roomsInsideWalls?: boolean;
+  /**
+   * Door zones as the quarter circle the leaf sweeps instead of the full square (pieces still keep out of it).
+   * Default false: the square, as before. (2026-11-27, compact Swiss bathrooms of Swiss Dwellings.)
+   */
+  doorSwingArc?: boolean;
 }
 
 export interface VariantGroup {
@@ -449,6 +454,7 @@ export function furnishApartment(req: ApartmentRequest, opts: FurnishApartmentOp
       ...(open.openSegments.length ? { openSegments: open.openSegments } : {}),
       ...(open.openKitchen ? { openKitchen: true } : {}),
       ...(reserved?.length ? { reserved } : {}),
+      ...(req.doorSwingArc ? { doorArc: true } : {}),
     };
   };
 

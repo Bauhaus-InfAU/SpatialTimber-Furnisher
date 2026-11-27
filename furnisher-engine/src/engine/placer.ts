@@ -211,6 +211,24 @@ export function doorWidth(roomName: string): number {
   return roomName === "Bathroom" || roomName === "WC" ? 0.8 : 0.9;
 }
 
+/** Quarter-circle door zone (room.doorArc): hinge at the jamb nearer a room corner (as pickHingeIndex in
+ *  apartment.ts), the leaf sweeps from the opening into the room. Returns [polygon, obstacle segments]. */
+const ARC_STEPS = 8;
+function doorSector(c0: Point2D, c1: Point2D, inward: Point2D, dw: number, polygon: Point2D[]): [Point2D[], [Point2D, Point2D][]] {
+  const near = (p: Point2D) => Math.min(...polygon.map(v => Math.hypot(v[0] - p[0], v[1] - p[1])));
+  const [h, j] = near(c0) <= near(c1) ? [c0, c1] : [c1, c0];
+  const u = normalize(sub(j, h));                                    // along the opening, hinge → jamb
+  const arc: Point2D[] = [];
+  for (let k = 0; k <= ARC_STEPS; k++) {
+    const a = (k / ARC_STEPS) * Math.PI / 2;                          // 0: closed (at the jamb), π/2: open (into the room)
+    arc.push(add(h, add(scalePt(u, dw * Math.cos(a)), scalePt(inward, dw * Math.sin(a)))));
+  }
+  const poly: Point2D[] = [h, ...arc];
+  const segs: [Point2D, Point2D][] = [[h, arc[ARC_STEPS]]];
+  for (let k = 0; k < ARC_STEPS; k++) segs.push([arc[k], arc[k + 1]]);
+  return [poly, segs];
+}
+
 function getDoorObstacleSegments(room: Room, dw: number): [Point2D, Point2D][] {
   const doors = room.doors ?? [];
   if (doors.length === 0) return [];
@@ -239,6 +257,7 @@ function getDoorObstacleSegments(room: Room, dw: number): [Point2D, Point2D][] {
     const c2 = add(c1, scalePt(inward, dw));
     const c3 = add(c0, scalePt(inward, dw));
 
+    if (room.doorArc) { allSegments.push(...doorSector(c0, c1, inward, dw, polygon)[1]); continue; }
     allSegments.push([c1, c2], [c2, c3], [c3, c0]);
   }
 
@@ -278,6 +297,14 @@ export function getDoorRectangles(room: Room): Point2D[][] {
   }
 
   return result;
+}
+
+/** The floor the door needs: the square of getDoorRectangles, or with room.doorArc the quarter circle. */
+export function getDoorZones(room: Room): Point2D[][] {
+  if (!room.doorArc) return getDoorRectangles(room);
+  const dw = doorWidth(room.name);
+  return getDoorRectangles(room).map(([c0, c1, , c3]) =>
+    doorSector(c0, c1, normalize(sub(c3, c0)), dw, room.polygon)[0]);
 }
 
 
